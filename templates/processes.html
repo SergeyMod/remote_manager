@@ -1,0 +1,590 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="filters">
+    <div class="filter-group">
+        <label for="machine-filter">Фильтр по машине:</label>
+        <select id="machine-filter" onchange="loadProcesses()">
+            <option value="">Все машины</option>
+        </select>
+    </div>
+
+
+    <div class="filter-group">
+        <label>
+            <input type="checkbox" id="show-running-only" onchange="loadProcesses()">
+            Только запущенные
+        </label>
+    </div>
+
+    <!-- Основной фильтр -->
+    <div class="filter-group" style="flex: 1;">
+        <label for="process-filter">
+            <i class="fas fa-search"></i> Фильтр процессов:
+        </label>
+        <div style="display: flex; gap: 0.5rem;">
+            <input type="text"
+                   id="process-filter"
+                   placeholder="Введите имя процесса, пользователя или команду..."
+                   style="flex: 1;"
+                   onkeyup="debouncedLoadProcesses()">
+        </div>
+    </div>
+
+    <!-- Кнопки для быстрых фильтров -->
+    <div class="filter-group">
+        <div class="quick-filters">
+            <button class="btn btn-sm" onclick="setProcessFilter('java')">
+                <i class="fab fa-java"></i> Java
+            </button>
+            <button class="btn btn-sm" onclick="setProcessFilter('python')">
+                <i class="fab fa-python"></i> Python
+            </button>
+            <button class="btn btn-sm" onclick="setProcessFilter('ssh')">
+                <i class="fas fa-terminal"></i> SSH
+            </button>
+            <button class="btn btn-sm" onclick="clearAllFilters()">
+                <i class="fas fa-times"></i> Сбросить
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="table-container">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Машина</th>
+                <th>PID</th>
+                <th>Команда</th>
+                <th>Сценарий</th>
+                <th>Время запуска</th>
+                <th>Статус</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody id="processes-table">
+            <tr>
+                <td colspan="8" class="loading">Загрузка процессов...</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- После таблицы процессов добавьте -->
+<div class="table-footer">
+    <div id="process-count" class="process-count">
+        <!-- Счетчик процессов будет здесь -->
+    </div>
+
+    <div class="table-actions">
+        <button class="btn btn-danger" onclick="stopAllFilteredProcesses()" id="stop-all-btn">
+            <i class="fas fa-stop-circle"></i> Остановить все отфильтрованные процессы
+        </button>
+    </div>
+</div>
+
+<script>
+// Глобальная переменная для хранения отфильтрованных процессов
+let currentFilteredProcesses = [];
+// Глобальная переменная для таймера
+let debounceTimer = null;
+
+// Функция debounce (задержка выполнения)
+function debouncedLoadProcesses() {
+    // Очищаем предыдущий таймер
+    if (debounceTimer) {
+        clearTimeout(debounceTimer);
+    }
+
+    // Показываем индикатор, что фильтр применяется
+    showDebounceIndicator();
+
+    // Устанавливаем новый таймер
+    debounceTimer = setTimeout(() => {
+        // Вызываем основную функцию загрузки
+        loadProcesses();
+
+        // Скрываем индикатор
+        hideDebounceIndicator();
+    }, 500); // Задержка 500 мс
+}
+
+// Показать индикатор дебаунса
+function showDebounceIndicator() {
+    let indicator = document.getElementById('debounce-indicator');
+    if (!indicator) {
+        // Создаем индикатор если его нет
+        indicator = document.createElement('div');
+        indicator.id = 'debounce-indicator';
+        indicator.style.cssText = `
+            position: absolute;
+            right: 10px;
+            top: -25px;
+            font-size: 0.8rem;
+            color: #718096;
+            background: #f7fafc;
+            padding: 2px 8px;
+            border-radius: 3px;
+            display: none;
+        `;
+
+        const filterGroup = document.querySelector('.filter-group');
+        if (filterGroup) {
+            filterGroup.style.position = 'relative';
+            filterGroup.appendChild(indicator);
+        }
+    }
+
+    indicator.textContent = 'Поиск...';
+    indicator.style.display = 'block';
+}
+
+// Скрыть индикатор дебаунса
+function hideDebounceIndicator() {
+    const indicator = document.getElementById('debounce-indicator');
+    if (indicator) {
+        indicator.style.display = 'none';
+    }
+}
+
+let processesInterval = null;
+let currentMachineFilter = '';
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadMachinesForFilter();
+    loadProcesses();
+    
+    // Автообновление каждые 10 секунд
+    processesInterval = setInterval(loadProcesses, 10000);
+});
+
+function loadMachinesForFilter() {
+    fetch('/api/machines')
+        .then(response => response.json())
+        .then(machines => {
+            const select = document.getElementById('machine-filter');
+            machines.forEach(machine => {
+                const option = document.createElement('option');
+                option.value = machine.id;
+                option.textContent = `${machine.name} (${machine.address})`;
+                select.appendChild(option);
+            });
+            
+            // Если в URL есть параметр machine, выбираем его
+            const urlParams = new URLSearchParams(window.location.search);
+            const machineId = urlParams.get('machine');
+            if (machineId) {
+                select.value = machineId;
+                currentMachineFilter = machineId;
+            }
+        });
+}
+
+// Функция для установки фильтра
+function setProcessFilter(filterValue) {
+    document.getElementById('process-filter').value = filterValue;
+    loadProcesses();
+}
+
+// Функция для сброса всех фильтров
+function clearAllFilters() {
+    document.getElementById('machine-filter').value = '';
+    document.getElementById('process-filter').value = '';
+    document.getElementById('show-running-only').checked = false;
+    loadProcesses();
+}
+
+async function loadProcesses() {
+    const machineFilter = document.getElementById('machine-filter').value;
+    const showRunningOnly = document.getElementById('show-running-only').checked;
+    const processFilter = document.getElementById('process-filter').value;
+
+    // Показываем загрузку
+    const tbody = document.getElementById('processes-table');
+    tbody.innerHTML = `
+        <tr>
+            <td colspan="8" class="loading">
+                <i class="fas fa-spinner fa-spin"></i> Получение процессов с машин...
+            </td>
+        </tr>
+    `;
+
+    try {
+        let url = '/api/processes/live';
+        if (processFilter) {
+            url += `?process_filter=${encodeURIComponent(processFilter)}`;
+        }
+
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        let processes = data.processes;
+
+        // Применяем фильтры
+        if (machineFilter) {
+            processes = processes.filter(p => p.machine_id == machineFilter);
+        }
+
+        if (showRunningOnly) {
+            // Фильтруем по статусу (R - running, S - sleeping)
+            processes = processes.filter(p => p.stat && p.stat.includes('R'));
+        }
+
+        updateProcessesTable(processes);
+
+    } catch (error) {
+        console.error('Error loading processes:', error);
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="8" style="text-align: center; padding: 2rem; color: #f56565;">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <div>Ошибка загрузки процессов: ${error.message}</div>
+                </td>
+            </tr>
+        `;
+        showToast('Ошибка загрузки процессов', 'error');
+    }
+}
+
+function updateProcessesTable(processes) {
+    const tbody = document.getElementById('processes-table');
+
+    currentFilteredProcesses = processes; // Сохраняем текущие процессы
+    if (!processes || processes.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="8" style="text-align: center; padding: 2rem;">
+                    <i class="fas fa-inbox" style="font-size: 3rem; color: #ccc; margin-bottom: 1rem;"></i>
+                    <div>Процессы не найдены</div>
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    tbody.innerHTML = '';
+
+    // Сортируем по PID (новые сверху)
+    processes.sort((a, b) => b.pid - a.pid);
+
+    processes.forEach(process => {
+        const row = document.createElement('tr');
+
+        // Определяем статус процесса
+        let statusClass = '';
+        let statusText = '';
+        if (process.stat) {
+            if (process.stat.includes('R')) {
+                statusClass = 'status-online';
+                statusText = 'Запущен';
+            } else if (process.stat.includes('S')) {
+                statusClass = 'status-info';
+                statusText = 'Спит';
+            } else if (process.stat.includes('Z')) {
+                statusClass = 'status-error';
+                statusText = 'Зомби';
+            } else {
+                statusClass = 'status-warning';
+                statusText = process.stat;
+            }
+        }
+
+        // Обрезаем длинную команду
+        const shortCommand = process.command.length > 50
+            ? process.command.substring(0, 50) + '...'
+            : process.command;
+
+        row.innerHTML = `
+            <td>${process.pid || 'N/A'}</td>
+            <td>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <i class="fas fa-desktop"></i>
+                    <div>
+                        <div>${process.machine_name || 'Unknown'}</div>
+                        <div style="font-size: 0.8rem; color: #718096;">
+                            ${process.machine_address || ''}
+                        </div>
+                    </div>
+                </div>
+            </td>
+            <td>${process.user || 'N/A'}</td>
+            <td>${process.cpu || '0'}%</td>
+            <td>${process.mem || '0'}%</td>
+            <td>
+                <span class="machine-status ${statusClass}">
+                    ${statusText}
+                </span>
+            </td>
+            <td title="${process.command || ''}">${shortCommand}</td>
+            <td>
+                <button class="btn btn-sm btn-danger" onclick="killProcess(${process.pid}, ${process.machine_id})"
+                        title="Остановить процесс (SIGTERM)">
+                    <i class="fas fa-stop"></i>
+                </button>
+                <button class="btn btn-sm btn-warning" onclick="forceKillProcess(${process.pid}, ${process.machine_id})"
+                        title="Принудительно остановить (SIGKILL)">
+                    <i class="fas fa-skull-crossbones"></i>
+                </button>
+            </td>
+        `;
+        
+        tbody.appendChild(row);
+
+    });
+
+    // Обновляем счетчик и кнопку
+    updateProcessCount(processes.length, processes.length);
+    updateStopAllButton(processes.length);
+}
+
+// Функция остановки всех отфильтрованных процессов
+async function stopAllFilteredProcesses() {
+    if (!currentFilteredProcesses || currentFilteredProcesses.length === 0) {
+        showToast('Нет процессов для остановки', 'warning');
+        return;
+    }
+
+    const processCount = currentFilteredProcesses.length;
+    const filterText = document.getElementById('process-filter').value;
+
+    let confirmMessage = `Остановить ${processCount} процессов?`;
+    if (filterText.trim()) {
+        confirmMessage = `Остановить ${processCount} процессов по фильтру "${filterText}"?`;
+    }
+
+    if (!confirm(confirmMessage)) {
+        return;
+    }
+
+    // Отключаем кнопку и показываем индикатор
+    const stopBtn = document.getElementById('stop-all-btn');
+    const originalText = stopBtn.innerHTML;
+    stopBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Остановка...';
+    stopBtn.disabled = true;
+
+    try {
+        let successCount = 0;
+        let failedCount = 0;
+
+        // Останавливаем процессы последовательно
+        for (const process of currentFilteredProcesses) {
+            try {
+                const response = await fetch(`/api/processes/kill/${process.machine_id}/${process.pid}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ signal: 'TERM' })
+                });
+
+                if (response.ok) {
+                    successCount++;
+                } else {
+                    failedCount++;
+                }
+
+                // Небольшая задержка между запросами
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+            } catch (error) {
+                console.error(`Error stopping process ${process.pid}:`, error);
+                failedCount++;
+            }
+        }
+
+        // Показываем результат
+        if (successCount > 0) {
+            showToast(`Остановлено ${successCount} из ${processCount} процессов`, 'success');
+
+            // Обновляем список через 2 секунды
+            setTimeout(() => {
+                loadProcesses();
+            }, 2000);
+        }
+
+        if (failedCount > 0) {
+            showToast(`Не удалось остановить ${failedCount} процессов`, 'error');
+        }
+
+    } catch (error) {
+        console.error('Error stopping all processes:', error);
+        showToast('Ошибка при остановке процессов', 'error');
+    } finally {
+        // Восстанавливаем кнопку
+        stopBtn.innerHTML = originalText;
+        stopBtn.disabled = false;
+    }
+}
+
+// Обновление кнопки "Остановить все"
+function updateStopAllButton(processCount) {
+    const stopBtn = document.getElementById('stop-all-btn');
+    if (!stopBtn) return;
+
+    if (processCount === 0) {
+        stopBtn.disabled = true;
+        stopBtn.title = 'Нет процессов для остановки';
+    } else {
+        stopBtn.disabled = false;
+        stopBtn.title = `Остановить ${processCount} процессов`;
+
+        // Обновляем текст кнопки с количеством
+        const filterText = document.getElementById('process-filter').value;
+        if (filterText.trim()) {
+            stopBtn.innerHTML = `<i class="fas fa-stop-circle"></i> Остановить ${processCount} отфильтрованных процессов`;
+        } else {
+            stopBtn.innerHTML = `<i class="fas fa-stop-circle"></i> Остановить все процессы (${processCount})`;
+        }
+    }
+}
+
+// Обновление счетчика процессов
+function updateProcessCount(shown, total) {
+    const counter = document.getElementById('process-count');
+    if (!counter) return;
+
+    const filterText = document.getElementById('process-filter').value;
+
+    if (filterText.trim()) {
+        counter.innerHTML = `
+            <i class="fas fa-filter"></i>
+            Найдено процессов: <strong>${shown}</strong>
+            <span style="color: #718096; margin-left: 0.5rem;">
+                (фильтр: "${filterText}")
+            </span>
+        `;
+    } else {
+        counter.innerHTML = `
+            <i class="fas fa-list"></i>
+            Всего процессов: <strong>${total}</strong>
+        `;
+    }
+}
+
+async function getMachineName(machineId) {
+    try {
+        const response = await fetch(`/api/machines/${machineId}`);
+        const machine = await response.json();
+        return machine.name;
+    } catch {
+        return `Машина #${machineId}`;
+    }
+}
+
+async function getScriptName(scriptId) {
+    if (!scriptId) return null;
+    
+    try {
+        const response = await fetch(`/api/scripts/${scriptId}`);
+        const script = await response.json();
+        return script.name;
+    } catch {
+        return `Сценарий #${scriptId}`;
+    }
+}
+
+// Добавим функции для остановки процессов
+async function killProcess(pid, machineId) {
+    if (!confirm(`Остановить процесс ${pid} (SIGTERM)?`)) return;
+
+    try {
+        const response = await fetch(`/api/processes/kill/${machineId}/${pid}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ signal: 'TERM' })
+        });
+
+        if (response.ok) {
+            showToast(`Процесс ${pid} остановлен`, 'success');
+            // Обновляем список через секунду
+            setTimeout(loadProcesses, 1000);
+        } else {
+            const error = await response.json();
+            showToast(`Ошибка: ${error.detail}`, 'error');
+        }
+    } catch (error) {
+        console.error('Error killing process:', error);
+        showToast('Ошибка остановки процесса', 'error');
+    }
+}
+
+async function forceKillProcess(pid, machineId) {
+    if (!confirm(`Принудительно остановить процесс ${pid} (SIGKILL)?`)) return;
+
+    try {
+        const response = await fetch(`/api/processes/kill/${machineId}/${pid}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ signal: 'KILL' })
+        });
+
+        if (response.ok) {
+            showToast(`Процесс ${pid} принудительно остановлен`, 'success');
+            setTimeout(loadProcesses, 1000);
+        } else {
+            const error = await response.json();
+            showToast(`Ошибка: ${error.detail}`, 'error');
+        }
+    } catch (error) {
+        console.error('Error force killing process:', error);
+        showToast('Ошибка остановки процесса', 'error');
+    }
+}
+
+
+// Очищаем интервал при уходе со страницы
+window.addEventListener('beforeunload', function() {
+    if (processesInterval) {
+        clearInterval(processesInterval);
+    }
+});
+</script>
+
+<style>
+.filters {
+    background: white;
+    border-radius: 10px;
+    padding: 1rem 1.5rem;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    display: flex;
+    gap: 2rem;
+    flex-wrap: wrap;
+}
+
+.filter-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.filter-group label {
+    font-weight: 500;
+    color: #333;
+}
+
+.filter-group select,
+.filter-group input[type="text"] {
+    padding: 0.5rem;
+    border: 1px solid #cbd5e0;
+    border-radius: 5px;
+    min-width: 200px;
+}
+
+.filter-group input[type="checkbox"] {
+    margin-right: 0.5rem;
+}
+
+.status-error {
+    background: #fed7d7;
+    color: #742a2a;
+}
+
+.status-error:hover {
+    background: #feb2b2;
+}
+</style>
+{% endblock %}

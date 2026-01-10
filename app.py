@@ -1,0 +1,986 @@
+from fastapi import FastAPI, Request, Depends, HTTPException, WebSocket, \
+    WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+import database
+import models
+from ssh_manager import ssh_manager
+import crud
+from typing import List, Dict, Any
+import datetime
+import json
+import asyncio
+import socket
+import logging
+
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="SSH Manager")
+
+# Монтируем статические файлы и шаблоны
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+
+# Создаем таблицы при старте
+@app.on_event("startup")
+async def startup():
+    try:
+        models.Base.metadata.create_all(bind=database.engine)
+        logger.info("Database tables created")
+
+        # Определяем текущую машину
+        current_address = ssh_manager.get_current_machine_address()
+        db = database.SessionLocal()
+        try:
+            crud.set_current_machine(db, current_address)
+            logger.info(f"Current machine address: {current_address}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Startup error: {e}")
+
+
+# Dependency для получения БД
+def get_db():
+    db = database.SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# WebSocket для обновлений
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(
+            f"WebSocket connected. Total connections: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        logger.info(
+            f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except Exception as e:
+                logger.error(f"WebSocket broadcast error: {e}")
+
+
+manager = ConnectionManager()
+
+
+# API endpoints
+@app.get("/api/machines")
+async def get_machines_api(db: Session = Depends(get_db)):
+    try:
+        machines = crud.get_machines(db)
+        return machines
+    except Exception as e:
+        logger.error(f"Error getting machines: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/machines")
+async def create_machine_api(machine: dict, db: Session = Depends(get_db)):
+    try:
+        # Проверяем уникальность адреса
+        existing = crud.get_machine_by_address(db, machine["address"])
+        if existing:
+            raise HTTPException(status_code=400,
+                                detail="Machine with this address already exists")
+
+        db_machine = crud.create_machine(db, machine)
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "machines"}))
+        return db_machine
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating machine: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# Test SSH connection for new machine (без сохранения в БД)
+@app.post("/api/machines/test")
+async def test_ssh_connection(machine_data: dict):
+    """
+    Тестирование SSH подключения к новой машине (без сохранения в БД)
+    """
+    try:
+        # Получаем данные из запроса
+        address = machine_data.get("address")
+        ssh_port = machine_data.get("ssh_port", 22)
+        username = machine_data.get("username")
+        password = machine_data.get("password")
+
+        # Валидация входных данных
+        if not all([address, username, password]):
+            raise HTTPException(
+                status_code=400,
+                detail="Missing required fields: address, username, password"
+            )
+
+        # Тестируем подключение
+        success, message = await ssh_manager.test_connection(
+            address, ssh_port, username, password
+        )
+
+        return {
+            "success": success,
+            "message": message,
+            "machine_data": {
+                "address": address,
+                "ssh_port": ssh_port,
+                "username": username
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error testing SSH connection: {e}")
+        raise HTTPException(status_code=500,
+                            detail=f"Internal server error: {str(e)}")
+
+
+@app.get("/api/machines/{machine_id}")
+async def get_machine_api(machine_id: int, db: Session = Depends(get_db)):
+    try:
+        machine = crud.get_machine(db, machine_id)
+        if not machine:
+            raise HTTPException(status_code=404, detail="Machine not found")
+        return machine
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting machine: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.put("/api/machines/{machine_id}")
+async def update_machine_api(machine_id: int, machine_data: dict,
+                             db: Session = Depends(get_db)):
+    try:
+        db_machine = crud.update_machine(db, machine_id, machine_data)
+        if not db_machine:
+            raise HTTPException(status_code=404, detail="Machine not found")
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "machines"}))
+        return db_machine
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating machine: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/api/machines/{machine_id}")
+async def delete_machine_api(machine_id: int, db: Session = Depends(get_db)):
+    try:
+        result = crud.delete_machine(db, machine_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Machine not found")
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "machines"}))
+        return {"message": "Machine deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting machine: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/machines/{machine_id}/test")
+async def test_machine_connection(machine_id: int,
+                                  db: Session = Depends(get_db)):
+    try:
+        machine = crud.get_machine(db, machine_id)
+        if not machine:
+            raise HTTPException(status_code=404, detail="Machine not found")
+
+        success, message = await ssh_manager.test_connection(
+            machine.address, machine.ssh_port, machine.username,
+            machine.password
+        )
+
+        # Обновляем статус
+        crud.update_machine_status(db, machine_id, success)
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "machines"}))
+
+        return {"success": success, "message": message}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error testing machine connection: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/machines/batch-test")
+async def batch_test_machines(db: Session = Depends(get_db)):
+    try:
+        machines = crud.get_machines(db)
+        results = []
+
+        for machine in machines:
+            success, message = await ssh_manager.test_connection(
+                machine.address, machine.ssh_port, machine.username,
+                machine.password
+            )
+            crud.update_machine_status(db, machine.id, success)
+            results.append({
+                "machine_id": machine.id,
+                "name": machine.name,
+                "success": success,
+                "message": message
+            })
+
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "machines"}))
+        return results
+    except Exception as e:
+        logger.error(f"Error batch testing machines: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/machines/{machine_id}/processes")
+async def get_machine_processes(machine_id: int,
+                                db: Session = Depends(get_db)):
+    try:
+        machine = crud.get_machine(db, machine_id)
+        if not machine:
+            raise HTTPException(status_code=404, detail="Machine not found")
+
+        # Получаем процессы из базы
+        processes = crud.get_machine_processes(db, machine_id)
+        return processes
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting machine processes: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# Script endpoints
+@app.get("/api/scripts")
+async def get_scripts_api(db: Session = Depends(get_db)):
+    try:
+        scripts = crud.get_scripts(db)
+        return scripts
+    except Exception as e:
+        logger.error(f"Error getting scripts: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/scripts")
+async def create_script_api(script: dict, db: Session = Depends(get_db)):
+    try:
+        db_script = crud.create_script(db, script)
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "scripts"}))
+        return db_script
+    except Exception as e:
+        logger.error(f"Error creating script: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/scripts/{script_id}")
+async def get_script_api(script_id: int, db: Session = Depends(get_db)):
+    try:
+        script = crud.get_script(db, script_id)
+        if not script:
+            raise HTTPException(status_code=404, detail="Script not found")
+        return script
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting script: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.put("/api/scripts/{script_id}")
+async def update_script_api(script_id: int, script_data: dict,
+                            db: Session = Depends(get_db)):
+    try:
+        db_script = crud.update_script(db, script_id, script_data)
+        if not db_script:
+            raise HTTPException(status_code=404, detail="Script not found")
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "scripts"}))
+        return db_script
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating script: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/api/scripts/{script_id}")
+async def delete_script_api(script_id: int, db: Session = Depends(get_db)):
+    try:
+        result = crud.delete_script(db, script_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Script not found")
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "scripts"}))
+        return {"message": "Script deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting script: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/scripts/{script_id}/execute")
+async def execute_script_api(script_id: int, request: dict,
+                             db: Session = Depends(get_db)):
+    try:
+        script = crud.get_script(db, script_id)
+        if not script:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        machine_ids = request.get("machine_ids", [])
+        results = []
+
+        # Запускаем в фоне без ожидания
+        asyncio.create_task(execute_script_background(script_id, machine_ids))
+
+        return {
+            "message": f"Script execution started on {len(machine_ids)} machines",
+            "script_id": script_id,
+            "machine_count": len(machine_ids)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error executing script: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+async def execute_script_background(script_id: int, machine_ids: List[int]):
+    """Фоновая задача выполнения скрипта"""
+    db = database.SessionLocal()
+    try:
+        script = crud.get_script(db, script_id)
+        if not script:
+            return
+
+        for machine_id in machine_ids:
+            machine = crud.get_machine(db, machine_id)
+            if machine and machine.is_active:
+                # Запускаем выполнение
+                success, stdout, stderr = await ssh_manager.execute_script(
+                    machine.address, machine.ssh_port, machine.username,
+                    machine.password,
+                    script.content
+                )
+
+                # Сохраняем процесс в базу
+                process_data = {
+                    "machine_id": machine_id,
+                    "script_id": script_id,
+                    "command": script.name,
+                    "status": "running" if success else "error",
+                    "pid": None
+                }
+                crud.create_process(db, process_data)
+
+                logger.info(
+                    f"Script {script.name} executed on {machine.name}: {'success' if success else 'failed'}")
+
+    except Exception as e:
+        logger.error(f"Error in background script execution: {e}")
+    finally:
+        db.close()
+
+
+# Profile endpoints
+@app.get("/api/profiles")
+async def get_profiles_api(db: Session = Depends(get_db)):
+    try:
+        profiles = crud.get_profiles(db)
+        return profiles
+    except Exception as e:
+        logger.error(f"Error getting profiles: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/profiles")
+async def create_profile_api(profile_data: dict,
+                             db: Session = Depends(get_db)):
+    try:
+        # Создаем профиль
+        profile = {"name": profile_data["name"]}
+        db_profile = crud.create_profile(db, profile)
+
+        # Добавляем скрипты в профиль
+        for idx, script_data in enumerate(profile_data.get("scripts", [])):
+            profile_script_data = {
+                "profile_id": db_profile.id,
+                "script_id": script_data["script_id"],
+                "machine_ids": json.dumps(script_data["machine_ids"]),
+                "order_index": idx
+            }
+            crud.create_profile_script(db, profile_script_data)
+
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "profiles"}))
+        return db_profile
+    except Exception as e:
+        logger.error(f"Error creating profile: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/profiles/{profile_id}")
+async def get_profile_api(profile_id: int, db: Session = Depends(get_db)):
+    try:
+        profile = crud.get_profile(db, profile_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        profile_scripts = crud.get_profile_scripts(db, profile_id)
+        result = {
+            "id": profile.id,
+            "name": profile.name,
+            "scripts": []
+        }
+
+        for ps in profile_scripts:
+            script = crud.get_script(db, ps.script_id)
+            if script:
+                result["scripts"].append({
+                    "script_id": script.id,
+                    "script_name": script.name,
+                    "machine_ids": ps.get_machine_ids(),
+                    "order_index": ps.order_index
+                })
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting profile: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/api/profiles/{profile_id}")
+async def delete_profile_api(profile_id: int, db: Session = Depends(get_db)):
+    try:
+        result = crud.delete_profile(db, profile_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "profiles"}))
+        return {"message": "Profile deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting profile: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/profiles/{profile_id}/execute")
+async def execute_profile_api(profile_id: int, db: Session = Depends(get_db)):
+    try:
+        profile = crud.get_profile(db, profile_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        profile_scripts = crud.get_profile_scripts(db, profile_id)
+        results = []
+
+        for ps in profile_scripts:
+            script = crud.get_script(db, ps.script_id)
+            if not script:
+                continue
+
+            machine_ids = ps.get_machine_ids()
+            for machine_id in machine_ids:
+                machine = crud.get_machine(db, machine_id)
+                if machine and machine.is_active:
+                    success, stdout, stderr = await ssh_manager.execute_script(
+                        machine.address, machine.ssh_port, machine.username,
+                        machine.password,
+                        script.content
+                    )
+
+                    process_data = {
+                        "machine_id": machine_id,
+                        "script_id": script.id,
+                        "command": f"Profile: {profile.name} - {script.name}",
+                        "status": "running" if success else "error"
+                    }
+                    crud.create_process(db, process_data)
+
+                    results.append({
+                        "profile_id": profile_id,
+                        "script_id": script.id,
+                        "machine_id": machine_id,
+                        "success": success,
+                        "stdout": stdout[:500],
+                        "stderr": stderr[:500]
+                    })
+
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "processes"}))
+        return results
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error executing profile: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# User endpoints
+@app.get("/api/users")
+async def get_users_api(db: Session = Depends(get_db)):
+    try:
+        users = crud.get_users(db)
+        return users
+    except Exception as e:
+        logger.error(f"Error getting users: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/users")
+async def create_user_api(user: dict, db: Session = Depends(get_db)):
+    try:
+        # Проверяем уникальность имени пользователя
+        existing = crud.get_user_by_username(db, user["username"])
+        if existing:
+            raise HTTPException(status_code=400, detail="User already exists")
+
+        db_user = crud.create_user(db, user)
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "users"}))
+        return db_user
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating user: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.put("/api/users/{user_id}")
+async def update_user_api(user_id: int, user_data: dict,
+                          db: Session = Depends(get_db)):
+    try:
+        db_user = crud.update_user(db, user_id, user_data)
+        if not db_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "users"}))
+        return db_user
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating user: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_user_api(user_id: int, db: Session = Depends(get_db)):
+    try:
+        result = crud.delete_user(db, user_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "users"}))
+        return {"message": "User deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting user: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# Process endpoints
+@app.get("/api/processes/live")
+async def get_live_processes(process_filter: str = None,
+                             db: Session = Depends(get_db)):
+    """Получение процессов со всех машин в реальном времени"""
+    try:
+        machines = crud.get_machines(db)
+        active_machines = [m for m in machines if m.is_active]
+
+        all_processes = []
+
+        # Собираем процессы параллельно
+        tasks = []
+        for machine in active_machines:
+            task = ssh_manager.get_processes_from_machine(
+                host=machine.address,
+                port=machine.ssh_port,
+                username=machine.username,
+                password=machine.password,
+                process_filter=process_filter
+            )
+            tasks.append((machine, asyncio.create_task(task)))
+
+        # Ждем завершения всех задач
+        for machine, task in tasks:
+            try:
+                processes = await task
+                for process in processes:
+                    process.update({
+                        'machine_id': machine.id,
+                        'machine_name': machine.name,
+                        'machine_address': machine.address,
+                        'machine_is_current': machine.is_current
+                    })
+                all_processes.extend(processes)
+            except Exception as e:
+                logger.error(
+                    f"Error getting processes from {machine.name}: {e}")
+
+        return {
+            "count": len(all_processes),
+            "processes": all_processes,
+            "machines_scanned": len(active_machines)
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting live processes: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/processes/live/{machine_id}")
+async def get_machine_live_processes(machine_id: int,
+                                     process_filter: str = None,
+                                     db: Session = Depends(get_db)):
+    """Получение процессов с конкретной машины"""
+    try:
+        machine = crud.get_machine(db, machine_id)
+        if not machine:
+            raise HTTPException(status_code=404, detail="Machine not found")
+
+        if not machine.is_active:
+            return {
+                "machine_id": machine_id,
+                "machine_name": machine.name,
+                "error": "Machine is offline",
+                "processes": []
+            }
+
+        processes = await ssh_manager.get_processes_from_machine(
+            host=machine.address,
+            port=machine.ssh_port,
+            username=machine.username,
+            password=machine.password,
+            process_filter=process_filter
+        )
+
+        # Добавляем информацию о машине
+        for process in processes:
+            process.update({
+                'machine_id': machine.id,
+                'machine_name': machine.name,
+                'machine_address': machine.address
+            })
+
+        return {
+            "machine_id": machine_id,
+            "machine_name": machine.name,
+            "process_count": len(processes),
+            "processes": processes
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting machine processes: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/processes/kill/{machine_id}/{pid}")
+async def kill_process_api(machine_id: int, pid: int, request: dict,
+                           db: Session = Depends(get_db)):
+    """Остановка процесса на машине"""
+    try:
+        machine = crud.get_machine(db, machine_id)
+        if not machine:
+            raise HTTPException(status_code=404, detail="Machine not found")
+
+        if not machine.is_active:
+            raise HTTPException(status_code=400, detail="Machine is offline")
+
+        signal = request.get("signal", "TERM")  # TERM или KILL
+
+        # Проверяем что процесс существует
+        check_cmd = f"ps -p {pid} > /dev/null 2>&1 && echo 'exists' || echo 'not_found'"
+        success, stdout, stderr = await ssh_manager.execute_command(
+            host=machine.address,
+            port=machine.ssh_port,
+            username=machine.username,
+            password=machine.password,
+            command=check_cmd
+        )
+
+        if success and 'exists' in stdout:
+            # Останавливаем процесс
+            kill_cmd = f"kill -{signal} {pid}"
+            success, stdout, stderr = await ssh_manager.execute_command(
+                host=machine.address,
+                port=machine.ssh_port,
+                username=machine.username,
+                password=machine.password,
+                command=kill_cmd
+            )
+
+            if success:
+                return {"success": True,
+                        "message": f"Process {pid} killed with signal {signal}"}
+            else:
+                raise HTTPException(status_code=500,
+                                    detail=f"Failed to kill process: {stderr}")
+        else:
+            raise HTTPException(status_code=404,
+                                detail=f"Process {pid} not found")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error killing process: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/processes")
+async def get_processes_api(db: Session = Depends(get_db)):
+    try:
+        processes = crud.get_processes(db)
+        return processes
+    except Exception as e:
+        logger.error(f"Error getting processes: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/api/processes/{process_id}")
+async def stop_process_api(process_id: int, db: Session = Depends(get_db)):
+    try:
+        process = crud.get_process(db, process_id)
+        if not process:
+            raise HTTPException(status_code=404, detail="Process not found")
+
+        # Отмечаем процесс как остановленный в базе
+        crud.update_process_status(db, process_id, "stopped")
+
+        # Если есть машина и PID, пытаемся остановить процесс через SSH
+        if process.machine_id and process.pid:
+            machine = crud.get_machine(db, process.machine_id)
+            if machine:
+                await ssh_manager.kill_process(
+                    machine.address, machine.ssh_port, machine.username,
+                    machine.password,
+                    process.pid
+                )
+
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "processes"}))
+        return {"message": "Process stopped"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error stopping process: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/processes/batch-kill")
+async def batch_kill_processes(request: dict, db: Session = Depends(get_db)):
+    """Массовая остановка процессов"""
+    try:
+        process_list = request.get("processes", [])
+        results = []
+
+        for proc_info in process_list:
+            machine_id = proc_info.get("machine_id")
+            pid = proc_info.get("pid")
+
+            if not machine_id or not pid:
+                results.append({
+                    "machine_id": machine_id,
+                    "pid": pid,
+                    "success": False,
+                    "error": "Missing machine_id or pid"
+                })
+                continue
+
+            machine = crud.get_machine(db, machine_id)
+            if not machine:
+                results.append({
+                    "machine_id": machine_id,
+                    "pid": pid,
+                    "success": False,
+                    "error": "Machine not found"
+                })
+                continue
+
+            try:
+                # Останавливаем процесс
+                kill_cmd = f"kill -TERM {pid}"
+                success, stdout, stderr = await ssh_manager.execute_command(
+                    host=machine.address,
+                    port=machine.ssh_port,
+                    username=machine.username,
+                    password=machine.password,
+                    command=kill_cmd
+                )
+
+                results.append({
+                    "machine_id": machine_id,
+                    "pid": pid,
+                    "success": success,
+                    "error": stderr if not success else None
+                })
+
+            except Exception as e:
+                results.append({
+                    "machine_id": machine_id,
+                    "pid": pid,
+                    "success": False,
+                    "error": str(e)
+                })
+
+        success_count = len([r for r in results if r["success"]])
+        total_count = len(results)
+
+        return {
+            "total": total_count,
+            "successful": success_count,
+            "failed": total_count - success_count,
+            "results": results
+        }
+
+    except Exception as e:
+        logger.error(f"Error in batch kill: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# WebSocket endpoint
+@app.websocket("/ws/updates")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # Обрабатываем входящие сообщения, если нужно
+            try:
+                message = json.loads(data)
+                if message.get("type") == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+            except:
+                pass
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        manager.disconnect(websocket)
+
+
+# HTML страницы
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    return templates.TemplateResponse("machines.html", {"request": request})
+
+
+@app.get("/machines", response_class=HTMLResponse)
+async def machines_page(request: Request):
+    return templates.TemplateResponse("machines.html", {"request": request})
+
+
+@app.get("/processes", response_class=HTMLResponse)
+async def processes_page(request: Request):
+    return templates.TemplateResponse("processes.html", {"request": request})
+
+
+@app.get("/scripts", response_class=HTMLResponse)
+async def scripts_page(request: Request):
+    return templates.TemplateResponse("scripts.html", {"request": request})
+
+
+@app.get("/profiles", response_class=HTMLResponse)
+async def profiles_page(request: Request):
+    return templates.TemplateResponse("profiles.html", {"request": request})
+
+
+@app.get("/users", response_class=HTMLResponse)
+async def users_page(request: Request):
+    return templates.TemplateResponse("users.html", {"request": request})
+
+
+# API для текущей машины
+@app.get("/api/current-machine")
+async def get_current_machine_info(db: Session = Depends(get_db)):
+    try:
+        current_address = ssh_manager.get_current_machine_address()
+        machine = crud.get_machine_by_address(db, current_address)
+
+        if machine:
+            return {
+                "exists": True,
+                "machine": {
+                    "id": machine.id,
+                    "name": machine.name,
+                    "address": machine.address,
+                    "is_current": machine.is_current
+                }
+            }
+        else:
+            return {
+                "exists": False,
+                "address": current_address
+            }
+    except Exception as e:
+        logger.error(f"Error getting current machine info: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/add-current-machine")
+async def add_current_machine(machine_data: dict,
+                              db: Session = Depends(get_db)):
+    try:
+        current_address = ssh_manager.get_current_machine_address()
+
+        # Проверяем, нет ли уже такой машины
+        existing = crud.get_machine_by_address(db, current_address)
+        if existing:
+            raise HTTPException(status_code=400,
+                                detail="Current machine already exists")
+
+        # Добавляем текущую машину
+        machine_data["address"] = current_address
+        machine_data["is_current"] = True
+
+        db_machine = crud.create_machine(db, machine_data)
+        await manager.broadcast(
+            json.dumps({"type": "update", "entity": "machines"}))
+        return db_machine
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding current machine: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# Health check
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "timestamp": datetime.datetime.now().isoformat()}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

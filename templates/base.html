@@ -1,0 +1,35 @@
+       <!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSH Manager</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <i class="fas fa-server"></i> SSH Manager
+        </div>
+        <div class="nav-links">
+            <a href="/machines" class="nav-link"><i class="fas fa-desktop"></i> Машины</a>
+            <a href="/processes" class="nav-link"><i class="fas fa-tasks"></i> Процессы</a>
+            <a href="/scripts" class="nav-link"><i class="fas fa-code"></i> Сценарии</a>
+            <a href="/profiles" class="nav-link"><i class="fas fa-list-alt"></i> Профили</a>
+            <a href="/users" class="nav-link"><i class="fas fa-users"></i> Пользователи</a>
+        </div>
+        <div class="nav-current-machine">
+            <span id="current-machine-indicator"></span>
+        </div>
+    </nav>
+
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script src="/static/js/main.js"></script>
+</body>
+</html>
