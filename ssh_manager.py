@@ -233,16 +233,16 @@ rm -f {temp_script}
             self.connections.clear()
 
 
-def get_current_machine_address() -> str:
-    """Получаем адрес текущей машины"""
-    try:
-        # Получаем имя хоста
-        hostname = socket.gethostname()
-        # Получаем IP адрес
-        ip_address = socket.gethostbyname(hostname)
-        return ip_address
-    except:
-        return "127.0.0.1"
+    def get_current_machine_address(self) -> str:
+        """Получаем адрес текущей машины"""
+        try:
+            # Получаем имя хоста
+            hostname = socket.gethostname()
+            # Получаем IP адрес
+            ip_address = socket.gethostbyname(hostname)
+            return ip_address
+        except:
+            return "127.0.0.1"
 
 
 async def test_connection(host: str, port: int, username: str,

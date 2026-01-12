@@ -135,7 +135,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-    // Управление пользователями
+// Управление пользователями
 async function loadUsers() {
     try {
         const response = await fetch('/api/users');
@@ -149,15 +149,48 @@ async function loadUsers() {
         select.innerHTML = '<option value="">Выберите пользователя</option>';
         users.forEach(user => {
             const option = document.createElement('option');
-            option.value = user.username;
+            option.value = user.id; // Сохраняем ID пользователя, а не username
             option.textContent = user.username;
+            option.dataset.password = user.password; // Сохраняем пароль в data-атрибуте
             select.appendChild(option);
         });
+
         // Восстанавливаем значение
         select.value = currentValue;
+
+        // Автоподстановка пароля при выборе пользователя
+        if (select.value) {
+            autoFillPassword(select.value);
+        }
+
     } catch (error) {
         console.error('Error loading users:', error);
     }
 }
+
+// Автозаполнение пароля при выборе пользователя
+function autoFillPassword(userId) {
+    const select = document.getElementById('username');
+    const passwordField = document.getElementById('password');
+
+    if (!select || !passwordField) return;
+
+    const selectedOption = select.options[select.selectedIndex];
+    if (selectedOption && selectedOption.dataset.password) {
+        passwordField.value = selectedOption.dataset.password;
+    } else {
+        passwordField.value = '';
+    }
+}
+
+// Добавляем обработчик изменения пользователя
+document.addEventListener('DOMContentLoaded', function() {
+    const usernameSelect = document.getElementById('username');
+    if (usernameSelect) {
+        usernameSelect.addEventListener('change', function() {
+            autoFillPassword(this.value);
+        });
+    }
+});
 </script>
 {% endblock %}

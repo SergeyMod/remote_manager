@@ -73,17 +73,17 @@ class ProfileScript(Base):
         self.machine_ids = json.dumps(ids)
 
 
-# class Process(Base):
-#     __tablename__ = "processes"
-#
-#     id = Column(Integer, primary_key=True, index=True)
-#     machine_id = Column(Integer, ForeignKey("machines.id"))
-#     script_id = Column(Integer, ForeignKey("scripts.id"), nullable=True)
-#     pid = Column(Integer, nullable=True)
-#     command = Column(String, nullable=False)
-#     status = Column(String, default="running")  # running, stopped, error
-#     started_at = Column(DateTime, default=func.now())
-#     stopped_at = Column(DateTime, nullable=True)
-#
-#     machine = relationship("Machine", back_populates="processes")
-#     script = relationship("Script")
+class Process(Base):
+    __tablename__ = "processes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    machine_id = Column(Integer, ForeignKey("machines.id"))
+    script_id = Column(Integer, ForeignKey("scripts.id"), nullable=True)
+    pid = Column(Integer, nullable=True)
+    command = Column(String, nullable=False)
+    status = Column(String, default="running")  # running, stopped, error
+    started_at = Column(DateTime, default=func.now())
+    stopped_at = Column(DateTime, nullable=True)
+
+    machine = relationship("Machine", back_populates="processes")
+    script = relationship("Script")

@@ -1,5 +1,5 @@
 fastapi==0.104.1
-uvicorn==0.24.0
+uvicorn[standard]
 sqlalchemy==2.0.45
 asyncssh==2.14.1
 aiofiles==23.2.1
