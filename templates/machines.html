@@ -149,7 +149,7 @@ async function loadUsers() {
         select.innerHTML = '<option value="">Выберите пользователя</option>';
         users.forEach(user => {
             const option = document.createElement('option');
-            option.value = user.id; // Сохраняем ID пользователя, а не username
+            option.value = user.username; // Сохраняем username в качестве значения
             option.textContent = user.username;
             option.dataset.password = user.password; // Сохраняем пароль в data-атрибуте
             select.appendChild(option);

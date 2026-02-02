@@ -79,6 +79,9 @@
     </div>
 
     <div class="table-actions">
+        <button class="btn" onclick="loadProcesses()" id="refresh-btn">
+            <i class="fas fa-sync"></i> Обновить
+        </button>
         <button class="btn btn-danger" onclick="stopAllFilteredProcesses()" id="stop-all-btn">
             <i class="fas fa-stop-circle"></i> Остановить все отфильтрованные процессы
         </button>
@@ -154,10 +157,17 @@ let currentMachineFilter = '';
 
 document.addEventListener('DOMContentLoaded', function() {
     loadMachinesForFilter();
+
+    // Устанавливаем фильтр по умолчанию
+    const defaultFilterInput = document.getElementById('process-filter');
+    if (defaultFilterInput) {
+        defaultFilterInput.value = 'java';
+    }
+
     loadProcesses();
-    
-    // Автообновление каждые 10 секунд
-    processesInterval = setInterval(loadProcesses, 10000);
+
+    // Автообновление отключено — используйте кнопку "Обновить"
+    // processesInterval = setInterval(loadProcesses, 10000);
 });
 
 function loadMachinesForFilter() {
@@ -248,6 +258,9 @@ async function loadProcesses() {
             </tr>
         `;
         showToast('Ошибка загрузки процессов', 'error');
+        // Обнуляем счётчик и кнопку при ошибке загрузки
+        updateProcessCount(0, 0);
+        updateStopAllButton(0);
     }
 }
 
@@ -264,6 +277,9 @@ function updateProcessesTable(processes) {
                 </td>
             </tr>
         `;
+        // Обновляем счётчик и состояние кнопки (без результатов)
+        updateProcessCount(0, 0);
+        updateStopAllButton(0);
         return;
     }
 
@@ -424,15 +440,21 @@ function updateStopAllButton(processCount) {
     const stopBtn = document.getElementById('stop-all-btn');
     if (!stopBtn) return;
 
+    const filterText = document.getElementById('process-filter').value;
     if (processCount === 0) {
         stopBtn.disabled = true;
         stopBtn.title = 'Нет процессов для остановки';
+        // Обновляем текст кнопки, чтобы количество не оставалось прежним
+        if (filterText.trim()) {
+            stopBtn.innerHTML = `<i class="fas fa-stop-circle"></i> Остановить 0 отфильтрованных процессов`;
+        } else {
+            stopBtn.innerHTML = `<i class="fas fa-stop-circle"></i> Остановить все процессы (0)`;
+        }
     } else {
         stopBtn.disabled = false;
         stopBtn.title = `Остановить ${processCount} процессов`;
 
         // Обновляем текст кнопки с количеством
-        const filterText = document.getElementById('process-filter').value;
         if (filterText.trim()) {
             stopBtn.innerHTML = `<i class="fas fa-stop-circle"></i> Остановить ${processCount} отфильтрованных процессов`;
         } else {

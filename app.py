@@ -40,6 +40,24 @@ async def startup():
         try:
             crud.set_current_machine(db, current_address)
             logger.info(f"Current machine address: {current_address}")
+
+            # Нормализуем поле username у машин: если там хранится id пользователя (число),
+            # заменяем его на реальный username из таблицы users
+            try:
+                machines = crud.get_machines(db)
+                for m in machines:
+                    if m.username and isinstance(m.username, str) and m.username.isdigit():
+                        try:
+                            uid = int(m.username)
+                            user = crud.get_user(db, uid)
+                            if user:
+                                logger.info(f"Normalizing machine {m.id} username from id {uid} to '{user.username}'")
+                                m.username = user.username
+                                db.commit()
+                        except Exception as e:
+                            logger.warning(f"Failed to normalize username for machine {m.id}: {e}")
+            except Exception as e:
+                logger.warning(f"Error while normalizing machine usernames: {e}")
         finally:
             db.close()
     except Exception as e:
@@ -72,11 +90,16 @@ class ConnectionManager:
             f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
     async def broadcast(self, message: str):
-        for connection in self.active_connections:
+        for connection in list(self.active_connections):
             try:
                 await connection.send_text(message)
             except Exception as e:
                 logger.error(f"WebSocket broadcast error: {e}")
+                # Удаляем нерабочие соединения из списка
+                try:
+                    self.active_connections.remove(connection)
+                except ValueError:
+                    pass
 
 
 manager = ConnectionManager()
@@ -101,6 +124,15 @@ async def create_machine_api(machine: dict, db: Session = Depends(get_db)):
         if existing:
             raise HTTPException(status_code=400,
                                 detail="Machine with this address already exists")
+
+        # Валидация SSH подключения перед сохранением
+        address = machine.get("address")
+        ssh_port = machine.get("ssh_port", 22)
+        username = str(machine.get("username")) if machine.get("username") is not None else None
+        password = machine.get("password")
+        success, message = await ssh_manager.test_connection(address, ssh_port, username, password)
+        if not success:
+            raise HTTPException(status_code=400, detail=f"SSH connection failed: {message}")
 
         db_machine = crud.create_machine(db, machine)
         await manager.broadcast(
@@ -177,6 +209,23 @@ async def update_machine_api(machine_id: int, machine_data: dict,
         db_machine = crud.update_machine(db, machine_id, machine_data)
         if not db_machine:
             raise HTTPException(status_code=404, detail="Machine not found")
+
+        # Проверяем подключение после обновления
+        address = db_machine.address
+        ssh_port = db_machine.ssh_port
+        username = str(db_machine.username) if db_machine.username is not None else None
+        password = db_machine.password
+        success, message = await ssh_manager.test_connection(address, ssh_port, username, password)
+        if not success:
+            # Помечаем машину как неактивную и удаляем мёртвое соединение
+            crud.update_machine_status(db, machine_id, False)
+            try:
+                await ssh_manager.remove_connection(address, ssh_port, username)
+            except Exception as e:
+                logger.warning(f"Error removing connection cache: {e}")
+            await manager.broadcast(json.dumps({"type": "update", "entity": "machines"}))
+            return JSONResponse(status_code=400, content={"success": False, "message": f"SSH connection failed: {message}. Machine marked inactive.", "deactivated": True})
+
         await manager.broadcast(
             json.dumps({"type": "update", "entity": "machines"}))
         return db_machine
@@ -216,12 +265,21 @@ async def test_machine_connection(machine_id: int,
             machine.password
         )
 
-        # Обновляем статус
-        crud.update_machine_status(db, machine_id, success)
-        await manager.broadcast(
-            json.dumps({"type": "update", "entity": "machines"}))
+        if success:
+            # Обновляем статус
+            crud.update_machine_status(db, machine_id, True)
+            await manager.broadcast(json.dumps({"type": "update", "entity": "machines"}))
+            return {"success": True, "message": message}
+        else:
+            # Помечаем машину как неактивную и удаляем мёртвое соединение
+            crud.update_machine_status(db, machine_id, False)
+            try:
+                await ssh_manager.remove_connection(machine.address, machine.ssh_port, machine.username)
+            except Exception as e:
+                logger.warning(f"Error removing connection cache: {e}")
+            await manager.broadcast(json.dumps({"type": "update", "entity": "machines"}))
+            return {"success": False, "message": message, "deactivated": True} 
 
-        return {"success": success, "message": message}
     except HTTPException:
         raise
     except Exception as e:
@@ -240,13 +298,29 @@ async def batch_test_machines(db: Session = Depends(get_db)):
                 machine.address, machine.ssh_port, machine.username,
                 machine.password
             )
-            crud.update_machine_status(db, machine.id, success)
-            results.append({
-                "machine_id": machine.id,
-                "name": machine.name,
-                "success": success,
-                "message": message
-            })
+            if success:
+                crud.update_machine_status(db, machine.id, True)
+                results.append({
+                    "machine_id": machine.id,
+                    "name": machine.name,
+                    "success": True,
+                    "message": message,
+                    "deactivated": False
+                })
+            else:
+                # Помечаем машину неактивной и удаляем мёртвое соединение
+                crud.update_machine_status(db, machine.id, False)
+                try:
+                    await ssh_manager.remove_connection(machine.address, machine.ssh_port, machine.username)
+                except Exception as e:
+                    logger.warning(f"Error removing connection cache for {machine.address}: {e}")
+                results.append({
+                    "machine_id": machine.id,
+                    "name": machine.name,
+                    "success": False,
+                    "message": message,
+                    "deactivated": True
+                })
 
         await manager.broadcast(
             json.dumps({"type": "update", "entity": "machines"}))
@@ -887,6 +961,15 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    try:
+        await ssh_manager.close_all()
+        logger.info("SSH connections closed on shutdown")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
 
 
 # HTML страницы

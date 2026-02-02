@@ -83,11 +83,13 @@ async function testAllMachines() {
         const results = await response.json();
 
         let successCount = 0;
+        let deactivatedCount = 0;
         results.forEach(result => {
             if (result.success) successCount++;
+            if (result.deactivated) deactivatedCount++;
         });
 
-        showToast(`Проверено: ${successCount}/${results.length} успешно`, 'success');
+        showToast(`Проверено: ${successCount}/${results.length} успешно${deactivatedCount ? ', помечено неактивными: ' + deactivatedCount : ''}`, 'success');
         loadMachines();
     } catch (error) {
         console.error('Error testing machines:', error);
@@ -220,7 +222,11 @@ async function testMachine(machineId) {
         if (result.success) {
             showToast('Подключение успешно', 'success');
         } else {
-            showToast(`Ошибка: ${result.message}`, 'error');
+            if (result.deactivated) {
+                showToast(`Машина помечена как неактивная: ${result.message}`, 'error');
+            } else {
+                showToast(`Ошибка: ${result.message}`, 'error');
+            }
         }
         loadMachines();
     } catch (error) {

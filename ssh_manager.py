@@ -170,7 +170,8 @@ rm -f {temp_script}
 """
 
 
-            result = await conn.run(f"nohup {script_content} > /dev/null 2>&1 &", timeout=300)
+            # Выполняем созданный временный скрипт (nohup) и оставляем его в фоне
+            result = await conn.run(command, timeout=300)
             return result.exit_status == 0, result.stdout, result.stderr
         except asyncio.TimeoutError:
             return False, "", "Script execution timeout"
@@ -223,11 +224,36 @@ rm -f {temp_script}
         except Exception as e:
             return False, str(e)
 
+    async def remove_connection(self, host: str, port: int, username: str):
+        """Удаление отдельного соединения из кэша (если есть)"""
+        key = f"{host}:{port}:{username}"
+        async with self.lock:
+            conn = self.connections.get(key)
+            if conn:
+                try:
+                    conn.close()
+                    if hasattr(conn, 'wait_closed'):
+                        try:
+                            await conn.wait_closed()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    del self.connections[key]
+                except KeyError:
+                    pass
+
     async def close_all(self):
         async with self.lock:
             for key, conn in list(self.connections.items()):
                 try:
                     conn.close()
+                    if hasattr(conn, 'wait_closed'):
+                        try:
+                            await conn.wait_closed()
+                        except Exception:
+                            pass
                 except:
                     pass
             self.connections.clear()
