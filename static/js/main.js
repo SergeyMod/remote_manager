@@ -411,6 +411,15 @@ function connectWebSocket() {
             if (window.location.pathname.includes('/machines')) {
                 loadMachines();
             }
+            // Если обновились параметры, перезагрузим их (если функция доступна)
+            if (data.entity && data.entity === 'parameters') {
+                if (typeof loadParameters === 'function') {
+                    try { loadParameters(); } catch (e) { console.warn(e); }
+                }
+                if (typeof renderParameterSection === 'function') {
+                    try { renderParameterSection(); } catch (e) { console.warn(e); }
+                }
+            }
         }
     };
 }

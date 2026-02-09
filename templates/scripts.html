@@ -2,7 +2,7 @@
 
 {% block content %}
 <div class="page-header">
-    <h1><i class="fas fa-code"></i> Управление сценариями</h1>
+    <h1><i class="fas fa-file-code"></i> Управление сценариями</h1>
     <div class="header-actions">
         <button class="btn btn-primary" onclick="showAddScriptModal()">
             <i class="fas fa-plus"></i> Создать сценарий
@@ -10,421 +10,74 @@
     </div>
 </div>
 
-<div class="scripts-grid" id="scripts-container">
-    <!-- Сценарии будут загружены через JavaScript -->
-    <div class="loading">Загрузка сценариев...</div>
-</div>
+<div id="scripts-container" class="loading">Загрузка сценариев...</div>
 
-<!-- Модальное окно создания/редактирования сценария -->
+<!-- Модалка создания/редактирования -->
 <div id="script-modal" class="modal">
-    <div class="modal-content" style="max-width: 800px;">
+    <div class="modal-content">
         <div class="modal-header">
-            <h3 id="script-modal-title">Создать сценарий</h3>
+            <h3 id="modal-script-title">Создать сценарий</h3>
             <button class="close-btn" onclick="closeScriptModal()">&times;</button>
         </div>
         <div class="modal-body">
-            <form id="script-form">
-                <input type="hidden" id="script-id">
-                
-                <div class="form-group">
-                    <label for="script-name">Название сценария *</label>
-                    <input type="text" id="script-name" required>
-                </div>
-                
-                <div class="form-group">
-                    <label for="script-content">Код скрипта (Bash) *</label>
-                    <div class="script-editor">
-                        <div class="script-toolbar">
-                            <button type="button" class="btn btn-sm" onclick="formatScript()">
-                                <i class="fas fa-indent"></i> Форматировать
-                            </button>
-                            <button type="button" class="btn btn-sm" onclick="insertTemplate()">
-                                <i class="fas fa-code"></i> Шаблон
-                            </button>
-                        </div>
-                        <textarea id="script-content" class="script-content" required spellcheck="false"></textarea>
-                    </div>
-                </div>
-                
-                <div class="form-actions">
-                    <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-save"></i> Сохранить
-                    </button>
-                    <button type="button" class="btn" onclick="closeScriptModal()">Отмена</button>
-                </div>
-            </form>
-        </div>
-    </div>
-</div>
-
-<!-- Модальное окно запуска сценария -->
-<div id="execute-modal" class="modal">
-    <div class="modal-content" style="max-width: 700px;">
-        <div class="modal-header">
-            <h3>Запуск сценария</h3>
-            <button class="close-btn" onclick="closeExecuteModal()">&times;</button>
-        </div>
-        <div class="modal-body">
-            <h4 id="execute-script-name"></h4>
-            <p>Выберите машины для выполнения:</p>
-            
-            <div class="machines-selection" id="machines-selection">
-                <!-- Список машин с чекбоксами -->
+            <div class="form-group">
+                <label>Название сценария *</label>
+                <input type="text" id="script-name" required>
             </div>
-            
-            <div class="form-actions">
-                <button class="btn btn-primary" onclick="executeScript()">
-                    <i class="fas fa-play"></i> Запуск на выбранных
+            <div class="form-group">
+                <label>Код скрипта (Bash) *</label>
+                <textarea id="script-content" placeholder="#!/bin/bash&#10;echo Hello" required></textarea>
+            </div>
+            <div class="form-group">
+                <label>Параметры сценария</label>
+                <div id="script-parameters">
+                    <!-- Динамически добавляются -->
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="addScriptParameter()">
+                    <i class="fas fa-plus"></i> Добавить параметр
                 </button>
-                <button class="btn" onclick="closeExecuteModal()">Отмена</button>
             </div>
-            
-            <div id="execute-results" style="margin-top: 2rem; display: none;">
-                <h5>Результаты выполнения:</h5>
-                <div id="results-container" style="max-height: 300px; overflow-y: auto;"></div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeScriptModal()">Отмена</button>
+                <button class="btn btn-primary" onclick="saveScript()">Сохранить</button>
             </div>
         </div>
     </div>
 </div>
 
-<script>
-let currentScriptId = null;
+<div id="run-script-modal" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Запуск сценария: <span id="run-script-name"></span></h3>
+      <button class="close-btn" onclick="closeRunScriptModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="run-script-id">
 
-document.addEventListener('DOMContentLoaded', function() {
-    loadScripts();
-    
-    document.getElementById('script-form').addEventListener('submit', function(e) {
-        e.preventDefault();
-        saveScript();
-    });
-});
+      <div class="form-group">
+        <label>Выберите машины для выполнения:</label>
+        <select id="run-machine-select" multiple size="6" style="width:100%;">
+          <!-- Загружается динамически -->
+        </select>
+      </div>
 
-async function loadScripts() {
-    try {
-        const response = await fetch('/api/scripts');
-        const scripts = await response.json();
-        
-        const container = document.getElementById('scripts-container');
-        
-        if (scripts.length === 0) {
-            container.innerHTML = `
-                <div class="loading">
-                    <i class="fas fa-code" style="font-size: 3rem; color: #ccc; margin-bottom: 1rem;"></i>
-                    <div>Нет сценариев. Создайте первый сценарий.</div>
-                </div>
-            `;
-            return;
-        }
-        
-        container.innerHTML = '';
-        
-        scripts.forEach(script => {
-            const card = document.createElement('div');
-            card.className = 'machine-card';
-            
-            // Обрезаем длинный код для предпросмотра
-            const preview = script.content.length > 100 
-                ? script.content.substring(0, 100) + '...'
-                : script.content;
-            
-            card.innerHTML = `
-                <div class="machine-header">
-                    <div class="machine-title">
-                        <i class="fas fa-file-code"></i> ${script.name}
-                    </div>
-                    <div>
-                        <span class="machine-status status-info">
-                            ${new Date(script.updated_at).toLocaleDateString()}
-                        </span>
-                    </div>
-                </div>
-                <div class="machine-info">
-                    <div style="font-family: monospace; font-size: 0.85rem; color: #666; 
-                                background: #f7fafc; padding: 0.5rem; border-radius: 3px;
-                                max-height: 100px; overflow: hidden;">
-                        ${preview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}
-                    </div>
-                </div>
-                <div class="machine-actions">
-                    <button class="btn btn-sm btn-primary" onclick="showExecuteModal(${script.id})">
-                        <i class="fas fa-play"></i> Запустить
-                    </button>
-                    <button class="btn btn-sm btn-secondary" onclick="editScript(${script.id})">
-                        <i class="fas fa-edit"></i> Редактировать
-                    </button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteScript(${script.id})">
-                        <i class="fas fa-trash"></i> Удалить
-                    </button>
-                </div>
-            `;
-            
-            container.appendChild(card);
-        });
-    } catch (error) {
-        console.error('Error loading scripts:', error);
-        showToast('Ошибка загрузки сценариев', 'error');
-    }
-}
+      <div class="form-group">
+        <label>Параметры</label>
+        <div id="run-parameters-container">
+          <!-- Динамически добавляются -->
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="addRunParameter()">
+          <i class="fas fa-plus"></i> Добавить параметр
+        </button>
+      </div>
 
-function showAddScriptModal() {
-    document.getElementById('script-id').value = '';
-    document.getElementById('script-name').value = '';
-    document.getElementById('script-content').value = '';
-    document.getElementById('script-modal-title').textContent = 'Создать сценарий';
-    document.getElementById('script-modal').style.display = 'flex';
-}
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeRunScriptModal()">Отмена</button>
+        <button class="btn btn-primary" onclick="executeScript()">Запуск на выбранных</button>
+      </div>
+    </div>
+  </div>
+</div>
 
-function closeScriptModal() {
-    document.getElementById('script-modal').style.display = 'none';
-}
-
-function formatScript() {
-    const textarea = document.getElementById('script-content');
-    const lines = textarea.value.split('\n');
-    const formatted = lines.map(line => {
-        // Простое форматирование - удаляем лишние пробелы в начале/конце
-        return line.trim();
-    }).filter(line => line !== '').join('\n');
-    
-    textarea.value = formatted;
-}
-
-function insertTemplate() {
-    const template = `#!/bin/bash
-
-# Название скрипта: $(document.getElementById('script-name').value || 'Новый скрипт')
-# Автор: $(navigator.userAgent.match(/\(([^)]+)\)/)?.[1] || 'Unknown')
-# Дата создания: ${new Date().toLocaleDateString()}
-
-# Переменные
-SCRIPT_NAME="$(document.getElementById('script-name').value || 'new_script')"
-LOG_FILE="/tmp/\${SCRIPT_NAME}_\$(date +%Y%m%d_%H%M%S).log"
-
-# Функция логирования
-log() {
-    echo "\$(date '+%Y-%m-%d %H:%M:%S') - \$1" | tee -a "\$LOG_FILE"
-}
-
-# Функция проверки ошибок
-check_error() {
-    if [ \$? -ne 0 ]; then
-        log "ОШИБКА: \$1"
-        exit 1
-    fi
-}
-
-# Основная логика
-main() {
-    log "Старт скрипта \${SCRIPT_NAME}"
-    
-    # Пример: проверка свободного места
-    log "Проверка свободного места..."
-    df -h /
-    
-    # Пример: список запущенных процессов
-    log "Текущие процессы:"
-    ps aux | head -20
-    
-    # Пример: информация о системе
-    log "Информация о системе:"
-    uname -a
-    
-    log "Скрипт завершен успешно"
-}
-
-# Запуск основной функции
-main "$@"`;
-    
-    document.getElementById('script-content').value = template;
-}
-
-async function saveScript() {
-    const scriptId = document.getElementById('script-id').value;
-    const scriptData = {
-        name: document.getElementById('script-name').value,
-        content: document.getElementById('script-content').value
-    };
-    
-    try {
-        let response;
-        if (scriptId) {
-            response = await fetch(`/api/scripts/${scriptId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(scriptData)
-            });
-        } else {
-            response = await fetch('/api/scripts', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(scriptData)
-            });
-        }
-        
-        if (response.ok) {
-            showToast(`Сценарий ${scriptId ? 'обновлен' : 'создан'}`, 'success');
-            closeScriptModal();
-            loadScripts();
-        } else {
-            const error = await response.json();
-            showToast(`Ошибка: ${error.detail}`, 'error');
-        }
-    } catch (error) {
-        console.error('Error saving script:', error);
-        showToast('Ошибка сохранения сценария', 'error');
-    }
-}
-
-async function editScript(scriptId) {
-    try {
-        const response = await fetch(`/api/scripts/${scriptId}`);
-        const script = await response.json();
-        
-        document.getElementById('script-id').value = script.id;
-        document.getElementById('script-name').value = script.name;
-        document.getElementById('script-content').value = script.content;
-        document.getElementById('script-modal-title').textContent = 'Редактировать сценарий';
-        document.getElementById('script-modal').style.display = 'flex';
-    } catch (error) {
-        console.error('Error loading script:', error);
-        showToast('Ошибка загрузки сценария', 'error');
-    }
-}
-
-async function deleteScript(scriptId) {
-    if (!confirm('Вы уверены, что хотите удалить этот сценарий?')) return;
-    
-    try {
-        const response = await fetch(`/api/scripts/${scriptId}`, {
-            method: 'DELETE'
-        });
-        
-        if (response.ok) {
-            showToast('Сценарий удален', 'success');
-            loadScripts();
-        } else {
-            const error = await response.json();
-            showToast(`Ошибка: ${error.detail}`, 'error');
-        }
-    } catch (error) {
-        console.error('Error deleting script:', error);
-        showToast('Ошибка удаления сценария', 'error');
-    }
-}
-
-async function showExecuteModal(scriptId) {
-    currentScriptId = scriptId;
-    
-    try {
-        // Загружаем информацию о скрипте
-        const scriptResponse = await fetch(`/api/scripts/${scriptId}`);
-        const script = await scriptResponse.json();
-        
-        document.getElementById('execute-script-name').textContent = script.name;
-        
-        // Загружаем список машин
-        const machinesResponse = await fetch('/api/machines');
-        const machines = await machinesResponse.json();
-        
-        const container = document.getElementById('machines-selection');
-        container.innerHTML = '';
-        
-        // Создаем чекбоксы для каждой машины
-        machines.forEach(machine => {
-            const div = document.createElement('div');
-            div.style.marginBottom = '0.5rem';
-            div.style.display = 'flex';
-            div.style.alignItems = 'center';
-            div.style.gap = '0.5rem';
-            
-            div.innerHTML = `
-                <input type="checkbox" id="machine-${machine.id}" value="${machine.id}" 
-                       ${!machine.is_active ? 'disabled' : ''}>
-                <label for="machine-${machine.id}" style="${!machine.is_active ? 'opacity: 0.5;' : ''}">
-                    <i class="fas fa-desktop"></i> ${machine.name} (${machine.address})
-                    ${machine.is_current ? '<span class="machine-status status-current" style="margin-left: 0.5rem;">Текущая</span>' : ''}
-                    ${!machine.is_active ? '<span class="machine-status status-offline" style="margin-left: 0.5rem;">Оффлайн</span>' : ''}
-                </label>
-            `;
-            
-            container.appendChild(div);
-        });
-        
-        // Скрываем результаты
-        document.getElementById('execute-results').style.display = 'none';
-        document.getElementById('results-container').innerHTML = '';
-        
-        document.getElementById('execute-modal').style.display = 'flex';
-    } catch (error) {
-        console.error('Error showing execute modal:', error);
-        showToast('Ошибка подготовки запуска', 'error');
-    }
-}
-
-function closeExecuteModal() {
-    document.getElementById('execute-modal').style.display = 'none';
-    currentScriptId = null;
-}
-
-async function executeScript() {
-    if (!currentScriptId) return;
-    
-    // Собираем выбранные машины
-    const checkboxes = document.querySelectorAll('#machines-selection input[type="checkbox"]:checked');
-    const machineIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
-    
-    if (machineIds.length === 0) {
-        showToast('Выберите хотя бы одну машину', 'error');
-        return;
-    }
-    
-    showToast('Запуск сценария...', 'info');
-    
-    try {
-        const response = await fetch(`/api/scripts/${currentScriptId}/execute`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ machine_ids: machineIds })
-        });
-        
-        const results = await response.json();
-        
-        // Показываем результаты
-<!--        const resultsContainer = document.getElementById('results-container');-->
-<!--        resultsContainer.innerHTML = '';-->
-
-<!--        results.forEach((result, index) => {-->
-<!--            const resultDiv = document.createElement('div');-->
-<!--            resultDiv.className = 'result-item';-->
-<!--            resultDiv.style.marginBottom = '1rem';-->
-<!--            resultDiv.style.padding = '1rem';-->
-<!--            resultDiv.style.borderRadius = '5px';-->
-<!--            resultDiv.style.background = result.success ? '#c6f6d5' : '#fed7d7';-->
-<!--            resultDiv.style.border = `1px solid ${result.success ? '#9ae6b4' : '#feb2b2'}`;-->
-
-<!--            resultDiv.innerHTML = `-->
-<!--                <div style="font-weight: bold; margin-bottom: 0.5rem;">-->
-<!--                    <i class="fas fa-${result.success ? 'check-circle' : 'times-circle'}"></i>-->
-<!--                    ${result.machine_name} ${result.success ? '✓' : '✗'}-->
-<!--                </div>-->
-<!--                ${result.stdout ? `<div style="margin-bottom: 0.5rem;"><strong>Вывод:</strong><pre style="background: rgba(0,0,0,0.05); padding: 0.5rem; border-radius: 3px; font-size: 0.85rem; max-height: 100px; overflow: auto;">${result.stdout}</pre></div>` : ''}-->
-<!--                ${result.stderr ? `<div><strong>Ошибки:</strong><pre style="background: rgba(255,0,0,0.05); padding: 0.5rem; border-radius: 3px; font-size: 0.85rem; max-height: 100px; overflow: auto; color: #c53030;">${result.stderr}</pre></div>` : ''}-->
-<!--            `;-->
-
-<!--            resultsContainer.appendChild(resultDiv);-->
-<!--        });-->
-        
-<!--        document.getElementById('execute-results').style.display = 'block';-->
-        
-        // Прокручиваем к результатам
-<!--        resultsContainer.scrollTop = resultsContainer.scrollHeight;-->
-        
-        showToast(`Сценарий выполнен на ${machineIds.length} машинах`, 'success');
-        closeExecuteModal();
-    } catch (error) {
-        console.error('Error executing script:', error);
-        showToast('Ошибка выполнения сценария', 'error');
-    }
-}
-</script>
+<script src="/static/js/scripts.js"></script>
 {% endblock %}

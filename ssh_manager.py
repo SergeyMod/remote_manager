@@ -16,71 +16,55 @@ class SSHManager:
         self.connections: Dict[str, asyncssh.SSHClientConnection] = {}
         self.lock = asyncio.Lock()
 
-    async def get_connection(self, host: str, port: int, username: str,
-                             password: str) -> Optional[
-        asyncssh.SSHClientConnection]:
+    async def get_connection(self, host: str, port: int, username: str, password: str) -> Optional[asyncssh.SSHClientConnection]:
         key = f"{host}:{port}:{username}"
-
         async with self.lock:
             if key in self.connections:
                 conn = self.connections[key]
                 try:
-                    # Проверяем, что соединение еще живо
                     await conn.run("echo test", timeout=2)
                     return conn
-                except:
-                    # Соединение мертво, удаляем из кэша
+                except Exception:
                     del self.connections[key]
 
-            try:
-                conn = await asyncssh.connect(
-                    host=host,
-                    port=port,
-                    username=username,
-                    password=password,
-                    known_hosts=None,
-                    login_timeout=10,
-                    connect_timeout=10
-                )
-                self.connections[key] = conn
-                return conn
-            except Exception as e:
-                print(f"SSH connection error to {host}:{port}: {e}")
-                return None
-
-    async def get_processes_from_machine(self, host: str, port: int,
-                                         username: str,
-                                         password: str,
-                                         process_filter: str = None) -> List[
-        Dict]:
-        """
-        Получение списка процессов с машины через SSH
-        """
         try:
-            conn = await self.get_connection(host, port, username, password)
-            if not conn:
-                return []
+            conn = await asyncssh.connect(
+                host=host,
+                port=port,
+                username=username,
+                password=password,
+                known_hosts=None,
+                login_timeout=10,
+                connect_timeout=10
+            )
+            self.connections[key] = conn
+            return conn
+        except Exception as e:
+            logger.error(f"SSH connection error to {host}:{port}: {e}")
+            return None
 
-            # Базовая команда для получения процессов
-            if process_filter:
-                # Фильтруем по имени процесса
-                command = f"ps aux | grep -i '{process_filter}' | grep -v grep"
-            else:
-                # Все процессы пользователя
-                command = "ps aux"
+    async def get_processes_from_machine(
+        self, host: str, port: int, username: str, password: str, process_filter: str = None
+    ) -> List[Dict]:
+        conn = await self.get_connection(host, port, username, password)
+        if not conn:
+            return []
 
+        if process_filter:
+            command = f"ps aux | grep -i '{process_filter}' | grep -v grep"
+        else:
+            command = "ps aux"
+
+        try:
             result = await conn.run(command, timeout=10)
-
             if result.exit_status != 0:
                 return []
 
             processes = []
             lines = result.stdout.strip().split('\n')
-
             for line in lines:
                 if not line.strip():
                     continue
-
                 parts = line.split()
                 if len(parts) >= 11:
                     try:
@@ -101,31 +85,27 @@ class SSHManager:
                         processes.append(process_info)
                     except (ValueError, IndexError):
                         continue
-
             return processes
-
         except Exception as e:
             logger.error(f"Error getting processes from {host}: {e}")
             return []
 
-    async def test_connection(self, host: str, port: int, username: str,
-                              password: str) -> Tuple[bool, str]:
+    async def test_connection(self, host: str, port: int, username: str, password: str) -> Tuple[bool, str]:
         try:
             async with asyncssh.connect(
-                    host=host,
-                    port=port,
-                    username=username,
-                    password=password,
-                    known_hosts=None,
-                    login_timeout=10,
-                    connect_timeout=10
+                host=host,
+                port=port,
+                username=username,
+                password=password,
+                known_hosts=None,
+                login_timeout=10,
+                connect_timeout=10
             ) as conn:
-                result = await conn.run("echo 'SSH connection successful'",
-                                        timeout=5)
+                result = await conn.run("echo 'SSH connection successful'", timeout=5)
                 if result.exit_status == 0:
                     return True, "Connection successful"
                 else:
-                    return False, f"Command failed: {result.stderr}"
+                    return False, f"Command failed: {result.stderr.strip()}"
         except asyncio.TimeoutError:
             return False, "Connection timeout"
         except asyncssh.PermissionDenied:
@@ -150,27 +130,16 @@ class SSHManager:
         except Exception as e:
             return False, "", f"Error: {str(e)}"
 
-    async def execute_script(self, host: str, port: int, username: str,
-                             password: str,
-                             script_content: str) -> Tuple[bool, str, str]:
+    async def execute_script(self, host: str, port: int, username: str, password: str, script_content: str) -> Tuple[bool, str, str]:
+        conn = await self.get_connection(host, port, username, password)
+        if not conn:
+            return False, "", "Failed to establish connection"
+
+        import shlex
+        
+        safe_content = shlex.quote(script_content)
+        command = f"nohup /bin/bash -c {safe_content} > ~/script_debug.log 2>&1 &"
         try:
-            conn = await self.get_connection(host, port, username, password)
-            if not conn:
-                return False, "", "Failed to establish connection"
-
-            # Сохраняем скрипт во временный файл и выполняем
-            temp_script = f"/tmp/script_{datetime.datetime.now().timestamp()}.sh"
-            command = f"""
-cat > {temp_script} << 'EOF'
-{script_content}
-EOF
-chmod +x {temp_script}
-nohup {temp_script} > /dev/null 2>&1 &
-rm -f {temp_script}
-"""
-
-
-            # Выполняем созданный временный скрипт (nohup) и оставляем его в фоне
             result = await conn.run(command, timeout=300)
             return result.exit_status == 0, result.stdout, result.stderr
         except asyncio.TimeoutError:
@@ -211,63 +180,46 @@ rm -f {temp_script}
             print(f"Error getting processes from {host}: {e}")
             return []
 
-    async def kill_process(self, host: str, port: int, username: str,
-                           password: str,
-                           pid: int) -> Tuple[bool, str]:
+    async def kill_process(self, host: str, port: int, username: str, password: str, pid: int) -> Tuple[bool, str]:
+        conn = await self.get_connection(host, port, username, password)
+        if not conn:
+            return False, "Failed to establish connection"
         try:
-            conn = await self.get_connection(host, port, username, password)
-            if not conn:
-                return False, "Failed to establish connection"
-
             result = await conn.run(f"kill -9 {pid}", timeout=10)
             return result.exit_status == 0, result.stderr
         except Exception as e:
             return False, str(e)
 
     async def remove_connection(self, host: str, port: int, username: str):
-        """Удаление отдельного соединения из кэша (если есть)"""
         key = f"{host}:{port}:{username}"
         async with self.lock:
-            conn = self.connections.get(key)
+            conn = self.connections.pop(key, None)
             if conn:
                 try:
                     conn.close()
                     if hasattr(conn, 'wait_closed'):
-                        try:
-                            await conn.wait_closed()
-                        except Exception:
-                            pass
+                        await conn.wait_closed()
                 except Exception:
-                    pass
-                try:
-                    del self.connections[key]
-                except KeyError:
                     pass
 
     async def close_all(self):
         async with self.lock:
-            for key, conn in list(self.connections.items()):
+            for conn in self.connections.values():
                 try:
                     conn.close()
                     if hasattr(conn, 'wait_closed'):
-                        try:
-                            await conn.wait_closed()
-                        except Exception:
-                            pass
-                except:
+                        await conn.wait_closed()
+                except Exception:
                     pass
             self.connections.clear()
 
 
     def get_current_machine_address(self) -> str:
-        """Получаем адрес текущей машины"""
         try:
-            # Получаем имя хоста
             hostname = socket.gethostname()
-            # Получаем IP адрес
             ip_address = socket.gethostbyname(hostname)
             return ip_address
-        except:
+        except Exception:
             return "127.0.0.1"
 
 

@@ -1,5 +1,6 @@
+import sys
 from fastapi import FastAPI, Request, Depends, HTTPException, WebSocket, \
-    WebSocketDisconnect
+    WebSocketDisconnect, params
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -14,6 +15,7 @@ import json
 import asyncio
 import socket
 import logging
+import re
 
 
 # Настройка логирования
@@ -26,6 +28,17 @@ app = FastAPI(title="SSH Manager")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+def substitute_script_params(script_content: str, params: list) -> str:
+    result = script_content
+    for p in params:
+        name = str(p.get('name', '')).strip()
+        value = str(p.get('value', ''))
+        if not name:
+            continue
+        pattern = r'\$(?:' + re.escape(name) + r'\b|\{' + re.escape(name) + r'\})'
+        result = re.sub(pattern, f"{value}", result)
+        print(result)
+    return result
 
 # Создаем таблицы при старте
 @app.on_event("startup")
@@ -353,7 +366,18 @@ async def get_machine_processes(machine_id: int,
 async def get_scripts_api(db: Session = Depends(get_db)):
     try:
         scripts = crud.get_scripts(db)
-        return scripts
+        result = []
+        for s in scripts:
+            params = crud.get_script_parameters(db, s.id)
+            result.append({
+                'id': s.id,
+                'name': s.name,
+                'content': s.content,
+                'created_at': s.created_at.isoformat() if s.created_at else None,
+                'updated_at': s.updated_at.isoformat() if s.updated_at else None,
+                'parameters': [p.to_dict() for p in params]
+            })
+        return result
     except Exception as e:
         logger.error(f"Error getting scripts: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -362,7 +386,23 @@ async def get_scripts_api(db: Session = Depends(get_db)):
 @app.post("/api/scripts")
 async def create_script_api(script: dict, db: Session = Depends(get_db)):
     try:
+        params = script.pop('params', [])
         db_script = crud.create_script(db, script)
+
+        # Добавляем параметры сценария
+        for idx, p in enumerate(params):
+            name = str(p.get('name') or '').strip()
+            if not name:
+                continue
+            param_data = {
+                'script_id': db_script.id,
+                'name': name,
+                'default_value': p.get('default_value'),
+                'description': p.get('description'),
+                'order_index': idx
+            }
+            crud.create_script_parameter(db, param_data)
+
         await manager.broadcast(
             json.dumps({"type": "update", "entity": "scripts"}))
         return db_script
@@ -377,7 +417,18 @@ async def get_script_api(script_id: int, db: Session = Depends(get_db)):
         script = crud.get_script(db, script_id)
         if not script:
             raise HTTPException(status_code=404, detail="Script not found")
-        return script
+
+        # Получаем параметры сценария
+        params = crud.get_script_parameters(db, script_id)
+        script_dict = {
+            'id': script.id,
+            'name': script.name,
+            'content': script.content,
+            'created_at': script.created_at.isoformat() if script.created_at else None,
+            'updated_at': script.updated_at.isoformat() if script.updated_at else None,
+            'parameters': [p.to_dict() for p in params]
+        }
+        return script_dict
     except HTTPException:
         raise
     except Exception as e:
@@ -389,9 +440,27 @@ async def get_script_api(script_id: int, db: Session = Depends(get_db)):
 async def update_script_api(script_id: int, script_data: dict,
                             db: Session = Depends(get_db)):
     try:
+        params = script_data.pop('params', [])
+
         db_script = crud.update_script(db, script_id, script_data)
         if not db_script:
             raise HTTPException(status_code=404, detail="Script not found")
+
+        # Перезапишем параметры сценария
+        crud.delete_script_parameters(db, script_id)
+        for idx, p in enumerate(params):
+            name = str(p.get('name') or '').strip()
+            if not name:
+                continue
+            param_data = {
+                'script_id': script_id,
+                'name': name,
+                'default_value': p.get('default_value'),
+                'description': p.get('description'),
+                'order_index': idx
+            }
+            crud.create_script_parameter(db, param_data)
+
         await manager.broadcast(
             json.dumps({"type": "update", "entity": "scripts"}))
         return db_script
@@ -419,18 +488,47 @@ async def delete_script_api(script_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/scripts/{script_id}/execute")
-async def execute_script_api(script_id: int, request: dict,
-                             db: Session = Depends(get_db)):
+async def execute_script_api(script_id: int, request: dict, db: Session = Depends(get_db)):
     try:
         script = crud.get_script(db, script_id)
         if not script:
             raise HTTPException(status_code=404, detail="Script not found")
 
         machine_ids = request.get("machine_ids", [])
-        results = []
+        params = request.get("params", [])
 
-        # Запускаем в фоне без ожидания
-        asyncio.create_task(execute_script_background(script_id, machine_ids))
+        # Логируем параметры — будет видно в консоли при правильной настройке logging
+        logger.info(f"Executing script {script_id} with params: {params}")
+
+        # Проверка: только один ENDPOINT разрешён
+        endpoint_count = sum(
+            1 for p in params
+            if p.get('name') and str(p['name']).strip().upper() == 'ENDPOINT'
+        )
+        if endpoint_count > 1:
+            raise HTTPException(status_code=400, detail="Only one ENDPOINT parameter is allowed")
+
+        # Подстановка параметров в скрипт (единожды)
+        final_script_content = substitute_script_params(script.content, params)
+
+        # Сохранение параметров в БД (если save=True)
+        # for p in params:
+        #     if p.get('save'):
+        #         name = str(p.get('name') or '').strip()
+        #         value = str(p.get('value') or '')
+        #         description = p.get('description', '')
+        #         if name:
+        #             existing = crud.get_parameter_by_name(db, name)
+        #             if existing:
+        #                 existing.value = value
+        #                 existing.description = description
+        #                 db.commit()
+        #             else:
+        #                 crud.create_parameter(db, {"name": name, "value": value, "description": description})
+        #             await manager.broadcast(json.dumps({"type": "update", "entity": "parameters"}))
+
+        # Запуск в фоне
+        asyncio.create_task(execute_script_background_content(final_script_content, machine_ids, script_id))
 
         return {
             "message": f"Script execution started on {len(machine_ids)} machines",
@@ -441,45 +539,70 @@ async def execute_script_api(script_id: int, request: dict,
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error executing script: {e}")
+        logger.error(f"Error executing script {script_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-async def execute_script_background(script_id: int, machine_ids: List[int]):
-    """Фоновая задача выполнения скрипта"""
+async def execute_script_background_content(script_content: str, machine_ids: List[int], originating_script_id: int = None):
+    """Фоновая задача выполнения скрипта по переданному контенту"""
     db = database.SessionLocal()
     try:
-        script = crud.get_script(db, script_id)
-        if not script:
-            return
-
         for machine_id in machine_ids:
             machine = crud.get_machine(db, machine_id)
             if machine and machine.is_active:
-                # Запускаем выполнение
                 success, stdout, stderr = await ssh_manager.execute_script(
                     machine.address, machine.ssh_port, machine.username,
                     machine.password,
-                    script.content
+                    script_content
                 )
 
-                # Сохраняем процесс в базу
                 process_data = {
                     "machine_id": machine_id,
-                    "script_id": script_id,
-                    "command": script.name,
+                    "script_id": originating_script_id,
+                    "command": f"exec_script_{originating_script_id or 'custom'}",
                     "status": "running" if success else "error",
                     "pid": None
                 }
                 crud.create_process(db, process_data)
-
-                logger.info(
-                    f"Script {script.name} executed on {machine.name}: {'success' if success else 'failed'}")
+                logger.info(f"Executed script on {machine.name}: {'success' if success else 'failed'}")
 
     except Exception as e:
         logger.error(f"Error in background script execution: {e}")
     finally:
         db.close()
+
+
+# Parameter endpoints
+@app.get('/api/parameters')
+async def get_parameters_api(db: Session = Depends(get_db)):
+    try:
+        params = crud.get_parameters(db)
+        # return simplified dicts
+        return [p.to_dict() for p in params]
+    except Exception as e:
+        logger.error(f"Error getting parameters: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post('/api/parameters')
+async def create_parameter_api(parameter_data: dict, db: Session = Depends(get_db)):
+    try:
+        name = parameter_data.get('name')
+        value = parameter_data.get('value')
+        description = parameter_data.get('description')
+        if not name or value is None:
+            raise HTTPException(status_code=400, detail='Missing name or value')
+        existing = crud.get_parameter_by_name(db, name)
+        if existing:
+            raise HTTPException(status_code=400, detail='Parameter with this name already exists')
+        p = crud.create_parameter(db, { 'name': name, 'value': value, 'description': description })
+        await manager.broadcast(json.dumps({"type": "update", "entity": "parameters"}))
+        return p.to_dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating parameter: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # Profile endpoints
@@ -494,61 +617,80 @@ async def get_profiles_api(db: Session = Depends(get_db)):
 
 
 @app.post("/api/profiles")
-async def create_profile_api(profile_data: dict,
-                             db: Session = Depends(get_db)):
+async def create_profile_api(request: dict, db: Session = Depends(get_db)):
     try:
-        # Создаем профиль
-        profile = {"name": profile_data["name"]}
-        db_profile = crud.create_profile(db, profile)
+        name = request.get("name")
+        if not name:
+            raise HTTPException(status_code=400, detail="Name is required")
 
-        # Добавляем скрипты в профиль
-        for idx, script_data in enumerate(profile_data.get("scripts", [])):
-            profile_script_data = {
-                "profile_id": db_profile.id,
-                "script_id": script_data["script_id"],
-                "machine_ids": json.dumps(script_data["machine_ids"]),
-                "order_index": idx
-            }
-            crud.create_profile_script(db, profile_script_data)
+        # Валидация шагов
+        steps = request.get("steps", [])
+        if not steps:
+            raise HTTPException(status_code=400, detail="At least one step is required")
 
-        await manager.broadcast(
-            json.dumps({"type": "update", "entity": "profiles"}))
-        return db_profile
+        for step in steps:
+            if not step.get("script_id"):
+                raise HTTPException(status_code=400, detail="Script ID is required in each step")
+            if not isinstance(step.get("machine_ids", []), list):
+                raise HTTPException(status_code=400, detail="machine_ids must be a list")
+
+        profile_data = {
+            "name": name,
+            "global_parameters": request.get("global_parameters", []),
+            "steps": steps
+        }
+
+        profile = crud.create_profile(db, profile_data)
+        return {"id": profile.id, "name": profile.name}
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error creating profile: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Error creating profile: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal error")
+
+
+@app.put("/api/profiles/{profile_id}")
+async def update_profile_api(profile_id: int, request: dict, db: Session = Depends(get_db)):
+    try:
+        existing = crud.get_profile(db, profile_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        name = request.get("name")
+        if not name:
+            raise HTTPException(status_code=400, detail="Name is required")
+
+        steps = request.get("steps", [])
+        if not steps:
+            raise HTTPException(status_code=400, detail="At least one step is required")
+
+        for step in steps:
+            if not step.get("script_id"):
+                raise HTTPException(status_code=400, detail="Script ID is required in each step")
+
+        profile_data = {
+            "name": name,
+            "global_parameters": request.get("global_parameters", []),
+            "steps": steps
+        }
+
+        profile = crud.update_profile(db, profile_id, profile_data)
+        return {"id": profile.id, "name": profile.name}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating profile {profile_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @app.get("/api/profiles/{profile_id}")
 async def get_profile_api(profile_id: int, db: Session = Depends(get_db)):
-    try:
-        profile = crud.get_profile(db, profile_id)
-        if not profile:
-            raise HTTPException(status_code=404, detail="Profile not found")
-
-        profile_scripts = crud.get_profile_scripts(db, profile_id)
-        result = {
-            "id": profile.id,
-            "name": profile.name,
-            "scripts": []
-        }
-
-        for ps in profile_scripts:
-            script = crud.get_script(db, ps.script_id)
-            if script:
-                result["scripts"].append({
-                    "script_id": script.id,
-                    "script_name": script.name,
-                    "machine_ids": ps.get_machine_ids(),
-                    "order_index": ps.order_index
-                })
-
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting profile: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    profile_data = crud.get_profile_with_steps(db, profile_id)
+    if not profile_data:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return profile_data  # ← это dict, и это нормально для JSON API
 
 
 @app.delete("/api/profiles/{profile_id}")
@@ -570,11 +712,17 @@ async def delete_profile_api(profile_id: int, db: Session = Depends(get_db)):
 @app.post("/api/profiles/{profile_id}/execute")
 async def execute_profile_api(profile_id: int, db: Session = Depends(get_db)):
     try:
+        # Получаем профиль как модель (не dict!)
         profile = crud.get_profile(db, profile_id)
         if not profile:
             raise HTTPException(status_code=404, detail="Profile not found")
 
+        # Получаем шаги (ProfileScript)
         profile_scripts = crud.get_profile_scripts(db, profile_id)
+
+        # Парсим глобальные параметры из поля (не метода!)
+        global_params = json.loads(profile.global_parameters) if profile.global_parameters else []
+
         results = []
 
         for ps in profile_scripts:
@@ -582,42 +730,55 @@ async def execute_profile_api(profile_id: int, db: Session = Depends(get_db)):
             if not script:
                 continue
 
-            machine_ids = ps.get_machine_ids()
+            # Парсим machine_ids и parameters из строк
+            machine_ids = json.loads(ps.machine_ids) if ps.machine_ids else []
+            script_params = json.loads(ps.parameters) if ps.parameters else []
+
+            # Объединяем: сначала глобальные, потом параметры шага (шаг переопределяет)
+            param_dict = {p['name']: p['value'] for p in global_params}
+            param_dict.update({p['name']: p['value'] for p in script_params})
+            combined_params = [{"name": k, "value": v} for k, v in param_dict.items()]
+
+            # Подставляем в скрипт
+            final_script_content = substitute_script_params(script.content, combined_params)
+
+            # Запуск на машинах
             for machine_id in machine_ids:
                 machine = crud.get_machine(db, machine_id)
-                if machine and machine.is_active:
-                    success, stdout, stderr = await ssh_manager.execute_script(
-                        machine.address, machine.ssh_port, machine.username,
-                        machine.password,
-                        script.content
-                    )
+                if not machine or not machine.is_active:
+                    continue
 
-                    process_data = {
-                        "machine_id": machine_id,
-                        "script_id": script.id,
-                        "command": f"Profile: {profile.name} - {script.name}",
-                        "status": "running" if success else "error"
-                    }
-                    crud.create_process(db, process_data)
+                success, stdout, stderr = await ssh_manager.execute_script(
+                    machine.address,
+                    machine.ssh_port,
+                    machine.username,
+                    machine.password,
+                    final_script_content
+                )
 
-                    results.append({
-                        "profile_id": profile_id,
-                        "script_id": script.id,
-                        "machine_id": machine_id,
-                        "success": success,
-                        "stdout": stdout[:500],
-                        "stderr": stderr[:500]
-                    })
+                # Сохраняем процесс (опционально)
+                process_data = {
+                    "machine_id": machine_id,
+                    "script_id": script.id,
+                    "command": f"Profile: {profile.name} - {script.name}",
+                    "status": "running" if success else "error",
+                    "pid": None
+                }
+                crud.create_process(db, process_data)
 
-        await manager.broadcast(
-            json.dumps({"type": "update", "entity": "processes"}))
-        return results
-    except HTTPException:
-        raise
+                results.append({
+                    "script": script.name,
+                    "machine": machine.name,
+                    "success": success
+                })
+
+        await manager.broadcast(json.dumps({"type": "update", "entity": "processes"}))
+        return {"message": f"Profile '{profile.name}' executed", "results": results}
+
     except Exception as e:
-        logger.error(f"Error executing profile: {e}")
+        logger.error(f"Profile execution error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
-
+    
 
 # User endpoints
 @app.get("/api/users")

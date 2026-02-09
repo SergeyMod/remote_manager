@@ -44,23 +44,66 @@ class Script(Base):
     profile_scripts = relationship("ProfileScript", back_populates="script")
 
 
+class Parameter(Base):
+    __tablename__ = "parameters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+    value = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "value": self.value,
+            "description": self.description,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class ScriptParameter(Base):
+    __tablename__ = "script_parameters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    script_id = Column(Integer, ForeignKey("scripts.id"))
+    name = Column(String, nullable=False)
+    default_value = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    order_index = Column(Integer, default=0)
+
+    script = relationship("Script", backref="script_parameters")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "script_id": self.script_id,
+            "name": self.name,
+            "default_value": self.default_value,
+            "description": self.description,
+            "order_index": self.order_index
+        }
+
+
 class Profile(Base):
     __tablename__ = "profiles"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     created_at = Column(DateTime, default=func.now())
+    global_parameters = Column(String, default="[]")  # ← ЭТО ДОЛЖНО БЫТЬ
 
     profile_scripts = relationship("ProfileScript", back_populates="profile")
 
 
 class ProfileScript(Base):
     __tablename__ = "profile_scripts"
-
     id = Column(Integer, primary_key=True, index=True)
     profile_id = Column(Integer, ForeignKey("profiles.id"))
     script_id = Column(Integer, ForeignKey("scripts.id"))
-    machine_ids = Column(String, default="[]")  # JSON массив ID машин
+    machine_ids = Column(String, default="[]")   # JSON list of machine IDs
+    parameters = Column(String, default="[]")    # JSON list of params: [{"name":"X","value":"Y"}]
     order_index = Column(Integer, default=0)
 
     profile = relationship("Profile", back_populates="profile_scripts")
@@ -71,6 +114,12 @@ class ProfileScript(Base):
 
     def set_machine_ids(self, ids):
         self.machine_ids = json.dumps(ids)
+
+    def get_parameters(self):
+        return json.loads(self.parameters) if self.parameters else []
+
+    def set_parameters(self, params):
+        self.parameters = json.dumps(params)
 
 
 class Process(Base):

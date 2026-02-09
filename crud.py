@@ -4,6 +4,8 @@ import models
 import datetime
 import json
 
+from models import Profile, ProfileScript
+
 
 # Machine CRUD operations
 def get_machines(db: Session, skip: int = 0, limit: int = 100):
@@ -158,20 +160,80 @@ def get_profile(db: Session, profile_id: int):
 
 
 def create_profile(db: Session, profile_data: dict):
-    db_profile = models.Profile(**profile_data)
+    # Создаём профиль
+    db_profile = Profile(
+        name=profile_data["name"],
+        global_parameters=json.dumps(profile_data.get("global_parameters", []))
+    )
     db.add(db_profile)
+    db.flush()  # Получаем ID профиля
+
+    # Создаём шаги
+    for idx, step in enumerate(profile_data.get("steps", [])):
+        ps = ProfileScript(
+            profile_id=db_profile.id,
+            script_id=step["script_id"],
+            machine_ids=json.dumps(step.get("machine_ids", [])),
+            parameters=json.dumps(step.get("params", [])),
+            order_index=idx
+        )
+        db.add(ps)
+
     db.commit()
     db.refresh(db_profile)
     return db_profile
 
 
+def get_profile_with_steps(db: Session, profile_id: int):
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not profile:
+        return None
+
+    # Загружаем шаги (ProfileScript)
+    steps = db.query(ProfileScript).filter(ProfileScript.profile_id == profile_id).order_by(ProfileScript.order_index).all()
+
+    # Преобразуем в словарь
+    profile_dict = {
+        "id": profile.id,
+        "name": profile.name,
+        "global_parameters": json.loads(profile.global_parameters) if profile.global_parameters else [],
+        "profile_scripts": [
+            {
+                "id": ps.id,
+                "script_id": ps.script_id,
+                "machine_ids": json.loads(ps.machine_ids) if ps.machine_ids else [],
+                "parameters": json.loads(ps.parameters) if ps.parameters else []
+            }
+            for ps in steps
+        ]
+    }
+    return profile_dict
+
+
 def update_profile(db: Session, profile_id: int, profile_data: dict):
-    db_profile = get_profile(db, profile_id)
-    if db_profile:
-        for key, value in profile_data.items():
-            setattr(db_profile, key, value)
-        db.commit()
-        db.refresh(db_profile)
+    db_profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not db_profile:
+        return None
+
+    db_profile.name = profile_data["name"]
+    db_profile.global_parameters = json.dumps(profile_data.get("global_parameters", []))
+
+    # Удаляем старые шаги
+    db.query(ProfileScript).filter(ProfileScript.profile_id == profile_id).delete()
+
+    # Создаём новые
+    for idx, step in enumerate(profile_data.get("steps", [])):
+        ps = ProfileScript(
+            profile_id=profile_id,
+            script_id=step["script_id"],
+            machine_ids=json.dumps(step.get("machine_ids", [])),
+            parameters=json.dumps(step.get("params", [])),
+            order_index=idx
+        )
+        db.add(ps)
+
+    db.commit()
+    db.refresh(db_profile)
     return db_profile
 
 
@@ -208,6 +270,62 @@ def delete_profile_scripts(db: Session, profile_id: int):
     ).delete()
     db.commit()
 
+
+# Parameter CRUD operations
+def get_parameters(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(models.Parameter).offset(skip).limit(limit).all()
+
+
+def get_parameter(db: Session, parameter_id: int):
+    return db.query(models.Parameter).filter(models.Parameter.id == parameter_id).first()
+
+
+def get_parameter_by_name(db: Session, name: str):
+    return db.query(models.Parameter).filter(models.Parameter.name == name).first()
+
+
+def create_parameter(db: Session, parameter_data: dict):
+    db_parameter = models.Parameter(**parameter_data)
+    db.add(db_parameter)
+    db.commit()
+    db.refresh(db_parameter)
+    return db_parameter
+
+
+def update_parameter(db: Session, parameter_id: int, parameter_data: dict):
+    db_parameter = get_parameter(db, parameter_id)
+    if db_parameter:
+        for key, value in parameter_data.items():
+            setattr(db_parameter, key, value)
+        db.commit()
+        db.refresh(db_parameter)
+    return db_parameter
+
+
+def delete_parameter(db: Session, parameter_id: int):
+    db_parameter = get_parameter(db, parameter_id)
+    if db_parameter:
+        db.delete(db_parameter)
+        db.commit()
+    return db_parameter
+
+
+# ScriptParameter CRUD operations
+def create_script_parameter(db: Session, script_parameter_data: dict):
+    db_param = models.ScriptParameter(**script_parameter_data)
+    db.add(db_param)
+    db.commit()
+    db.refresh(db_param)
+    return db_param
+
+
+def get_script_parameters(db: Session, script_id: int):
+    return db.query(models.ScriptParameter).filter(models.ScriptParameter.script_id == script_id).order_by(models.ScriptParameter.order_index).all()
+
+
+def delete_script_parameters(db: Session, script_id: int):
+    db.query(models.ScriptParameter).filter(models.ScriptParameter.script_id == script_id).delete()
+    db.commit()
 
 # Process CRUD operations
 def get_processes(db: Session, skip: int = 0, limit: int = 100):
