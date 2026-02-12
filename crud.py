@@ -309,7 +309,10 @@ def delete_parameter(db: Session, parameter_id: int):
 
 # Process CRUD operations
 def get_processes(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(models.Process).offset(skip).limit(limit).all()
+    return db.query(models.Process)\
+        .options(joinedload(models.Process.machine))\
+        .options(joinedload(models.Process.script))\
+        .offset(skip).limit(limit).all()
 
 
 def get_machine_processes(db: Session, machine_id: int):

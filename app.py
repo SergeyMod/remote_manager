@@ -1038,12 +1038,22 @@ async def kill_process_api(machine_id: int, pid: int, request: dict,
 
 @app.get("/api/processes")
 async def get_processes_api(db: Session = Depends(get_db)):
-    try:
-        processes = crud.get_processes(db)
-        return processes
-    except Exception as e:
-        logger.error(f"Error getting processes: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    processes = crud.get_processes(db)
+    result = []
+    for p in processes:
+        result.append({
+            "id": p.id,
+            "machine_id": p.machine_id,
+            "machine_name": p.machine.name if p.machine else f"Машина #{p.machine_id}",
+            "script_id": p.script_id,
+            "script_name": p.script.name if p.script else "Без сценария",
+            "command": p.command,
+            "status": p.status,
+            "pid": p.pid,
+            "started_at": p.started_at.isoformat() if p.started_at else None,
+            "stopped_at": p.stopped_at.isoformat() if p.stopped_at else None
+        })
+    return result
 
 
 @app.delete("/api/processes/{process_id}")

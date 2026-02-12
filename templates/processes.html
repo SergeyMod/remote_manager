@@ -54,20 +54,28 @@
     <table>
         <thead>
             <tr>
-                <th>ID</th>
-                <th>Машина</th>
                 <th>PID</th>
-                <th>Команда</th>
-                <th>Сценарий</th>
-                <th>Время запуска</th>
+                <th>Машина</th>
+                <th>Пользователь</th>
+                <th>CPU %</th>
+                <th>Память %</th>
                 <th>Статус</th>
+                <th>Команда</th>
                 <th>Действия</th>
             </tr>
         </thead>
         <tbody id="processes-table">
-            <tr>
-                <td colspan="8" class="loading">Загрузка процессов...</td>
-            </tr>
+                {% for p in processes %}
+                    <tr>
+                    <td>{{ p.id }}</td>
+                    <td>{{ p.machine_name }}</td>          <!-- не machine.address -->
+                    <td>{{ p.script_name }}</td>           <!-- не script_id -->
+                    <td>{{ p.command }}</td>
+                    <td>{{ p.status }}</td>
+                    <td>{{ p.pid or '-' }}</td>
+                    <td>{{ p.started_at }}</td>
+                    </tr>
+                {% endfor %}
         </tbody>
     </table>
 </div>
@@ -87,8 +95,178 @@
         </button>
     </div>
 </div>
+<div class="regex-section" style="margin-top: 2rem; padding: 1rem; background: #f8f9fa; border-radius: 8px;">
+    <h3 style="margin-top: 0; margin-bottom: 1rem;">
+        <i class="fas fa-code"></i> Регулярное выражение для обработки колонки "Команда"
+    </h3>
+    
+    <div style="display: flex; gap: 0.5rem; align-items: end;">
+        <div style="flex: 1;">
+            <label for="highlight-regex">Шаблон:</label>
+            <input 
+                type="text" 
+                id="highlight-regex" 
+                placeholder="Пример: .*TPS=(.*);.*profile=(.*);.* → $2 [$1]"
+                style="width: 100%; padding: 0.5rem; border: 1px solid #cbd5e0; border-radius: 5px;"
+                oninput="applyRegexTransformation()"
+            >
+            <div id="regex-error" style="color: #e53e3e; font-size: 0.875rem; margin-top: 0.25rem; display: none;"></div>
+        </div>
+    </div>
+    
+    <div style="margin-top: 0.5rem; font-size: 0.875rem; color: #718096;">
+        Подсказка:
+        <ul style="margin-top: 0.25rem; padding-left: 1.25rem;">
+            <li>Если шаблон содержит <code>$1</code>, <code>$2</code> — будет замена текста</li>
+            <li>Если нет — будет подсветка совпадений</li>
+            <li>Пример замены: <code>.*TPS=(\d+).*profile=([^;]+).* → $2 [$1]</code></li>
+        </ul>
+    </div>
+</div>
 
 <script>
+// Хранит оригинальные команды для восстановления
+const originalCommands = new Map();
+
+// Применяет регулярку: либо подсветка, либо замена
+function applyRegexTransformation() {
+    const regexInput = document.getElementById('highlight-regex');
+    const errorDiv = document.getElementById('regex-error');
+    const inputStr = regexInput.value.trim();
+    
+    // Сбрасываем ошибку
+    errorDiv.style.display = 'none';
+    
+    // Убираем все изменения
+    restoreOriginalCommands();
+    
+    if (!inputStr) return;
+    
+    try {
+        // Проверяем, есть ли в строке → (стрелка)
+        const hasArrow = inputStr.includes('→');
+        
+        if (hasArrow) {
+            // Режим замены
+            applyReplacementMode(inputStr);
+        } else {
+            // Режим подсветки
+            applyHighlightMode(inputStr);
+        }
+            
+    } catch (e) {
+        errorDiv.textContent = `Ошибка в регулярке: ${e.message}`;
+        errorDiv.style.display = 'block';
+    }
+}
+
+// Восстанавливает оригинальные команды
+function restoreOriginalCommands() {
+    document.querySelectorAll('#processes-table td[data-original-command]').forEach(cell => {
+        cell.innerHTML = cell.getAttribute('data-original-command');
+        cell.removeAttribute(' data-original-command');
+    });
+}
+
+// Режим подсветки
+function applyHighlightMode(regexStr) {
+    // Экранируем спецсимволы регулярки
+    const escapedRegex = regexStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(${escapedRegex})`, 'gi');
+    
+    document.querySelectorAll('#processes-table td:nth-child(7)').forEach(cell => {
+        const originalText = cell.title || cell.textContent;
+        if (regex.test(originalText)) {
+            regex.lastIndex = 0;
+            // Подсветка БЕЗ HTML-инъекции
+            const highlighted = originalText.replace(regex, '<mark class="regex-highlight">$1</mark>');
+            storeOriginal(cell);
+            cell.innerHTML = highlighted;
+        }
+    });
+}
+
+// Режим замены
+function applyReplacementMode(inputStr) {
+    // Разделяем по стрелке →
+    const parts = inputStr.split('→');
+    if (parts.length !== 2) {
+        throw new Error("Используйте → между шаблоном и заменой");
+    }
+    
+    const pattern = parts[0].trim();
+    let replacementTemplate = parts[1].trim();
+    
+    // Создаём регулярку из шаблона
+    const regex = new RegExp(pattern, 'gi');
+    
+    document.querySelectorAll('#processes-table td:nth-child(7)').forEach(cell => {
+        const originalText = cell.title || cell.textContent;
+        
+        // Проверяем, есть ли совпадение
+        if (regex.test(originalText)) {
+            regex.lastIndex = 0; // сброс для replace
+            
+            // Функция для обработки замены с группами
+            const result = originalText.replace(regex, (match, ...groups) => {
+                // groups содержит захваченные группы (groups[0] = $1, groups[1] = $2, ...)
+                let result = replacementTemplate;
+                
+                // Заменяем $1, $2, ... на соответствующие группы
+                result = result.replace(/\$(\d+)/g, (m, groupNum) => {
+                    const index = parseInt(groupNum, 10) - 1; // $1 → index 0
+                    return groups[index] || '';
+                });
+                
+                return result;
+            });
+            
+            storeOriginal(cell);
+            setMultilineContent(cell, result);
+        }
+    });
+}
+
+// Сохраняет оригинал для восстановления
+function storeOriginal(cell) {
+    if (!cell.hasAttribute('data-original-command')) {
+        cell.setAttribute('data-original-command', cell.innerHTML);
+    }
+}
+
+// Устанавливает многострочный контент
+function setMultilineContent(cell, text) {
+    // Экранируем HTML-символы
+    const safeText = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    
+    // Поддержка переносов строк
+    const html = safeText.replace(/\n/g, '<br>');
+    
+    cell.innerHTML = html;
+    cell.style.whiteSpace = 'pre-wrap';
+    cell.style.wordBreak = 'break-all';
+}
+
+// Стиль для подсветки
+if (!document.querySelector('#regex-highlight-style')) {
+    const style = document.createElement('style');
+    style.id = 'regex-highlight-style';
+    style.textContent = `
+        mark.regex-highlight {
+            background-color: #fffacd;
+            padding: 0 2px;
+            border-radius: 2px;
+            font-weight: bold;
+        }
+    `;
+    document.head.appendChild(style);
+}
+
 // Глобальная переменная для хранения отфильтрованных процессов
 let currentFilteredProcesses = [];
 // Глобальная переменная для таймера
