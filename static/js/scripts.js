@@ -1,17 +1,10 @@
-// scripts.js — управление сценариями
-
-let currentScriptId = null;
+// scripts.js — управление списком сценариев
 
 function showToast(message, type = 'info') {
-    // Используем глобальный тостер из main.js (если доступен)
     if (window.showToast) {
         window.showToast(message, type);
     } else {
-        const toast = document.createElement('div');
-        toast.className = `toast toast-${type}`;
-        toast.textContent = message;
-        document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 3000);
+        alert(`${type}: ${message}`);
     }
 }
 
@@ -43,13 +36,15 @@ async function loadScripts() {
                     <tbody>
         `;
         scripts.forEach(s => {
+            // Экранируем имя для HTML
+            const escapedName = s.name.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
             html += `
                 <tr>
                     <td>${s.id}</td>
                     <td>${s.name}</td>
                     <td>
-                        <button class="btn btn-sm btn-secondary" onclick="editScript(${s.id})">Редактировать</button>
-                        <button class="btn btn-sm btn-primary" onclick="showRunScriptModal(${s.id}, '${s.name}')">Выполнить</button>
+                        <a href="/scripts/${s.id}/edit" class="btn btn-sm btn-secondary">Редактировать</a>
+                        <button class="btn btn-sm btn-primary" onclick="showRunScriptModal(${s.id}, '${s.name.replace(/'/g, "\\'")}')">Выполнить</button>
                         <button class="btn btn-sm btn-danger" onclick="deleteScript(${s.id})">Удалить</button>
                     </td>
                 </tr>
@@ -68,148 +63,18 @@ async function loadScripts() {
 }
 
 // ======================
-// УПРАВЛЕНИЕ СЦЕНАРИЯМИ (СОЗДАНИЕ/РЕДАКТИРОВАНИЕ)
+// МОДАЛКА ЗАПУСКА СЦЕНАРИЯ
 // ======================
 
-function showAddScriptModal() {
-    currentScriptId = null;
-    document.getElementById('modal-script-title').textContent = 'Создать сценарий';
-    document.getElementById('script-name').value = '';
-    document.getElementById('script-content').value = '#!/bin/bash\n';
-    document.getElementById('script-parameters').innerHTML = '';
-    document.getElementById('script-modal').style.display = 'flex';
-}
-
-function closeScriptModal() {
-    document.getElementById('script-modal').style.display = 'none';
-}
-
-function addScriptParameter(name = '', defaultValue = '', description = '') {
-    const container = document.getElementById('script-parameters');
-    const idx = container.children.length;
-    const div = document.createElement('div');
-    div.className = 'form-group';
-    div.innerHTML = `
-        <div style="display:flex;gap:0.5rem;align-items:end;">
-            <div style="flex:1;">
-                <label>Имя параметра</label>
-                <input type="text" placeholder="DB_HOST" value="${name}" data-field="name">
-            </div>
-            <div style="flex:1;">
-                <label>Значение по умолчанию</label>
-                <input type="text" placeholder="localhost" value="${defaultValue}" data-field="default_value">
-            </div>
-            <div style="flex:2;">
-                <label>Описание</label>
-                <input type="text" placeholder="Адрес базы данных" value="${description}" data-field="description">
-            </div>
-            <button type="button" class="btn btn-danger btn-sm" style="height:38px;" onclick="this.parentElement.parentElement.remove()">×</button>
-        </div>
-    `;
-    container.appendChild(div);
-}
-
-async function editScript(scriptId) {
-    try {
-        const res = await fetch(`/api/scripts/${scriptId}`);
-        const script = await res.json();
-        currentScriptId = scriptId;
-        document.getElementById('modal-script-title').textContent = 'Редактировать сценарий';
-        document.getElementById('script-name').value = script.name;
-        document.getElementById('script-content').value = script.content;
-        const paramsContainer = document.getElementById('script-parameters');
-        paramsContainer.innerHTML = '';
-        script.parameters?.forEach(p => {
-            addScriptParameter(p.name, p.default_value || '', p.description || '');
-        });
-        document.getElementById('script-modal').style.display = 'flex';
-    } catch (e) {
-        console.error('Ошибка загрузки сценария:', e);
-        showToast('Ошибка загрузки сценария', 'error');
-    }
-}
-
-async function saveScript() {
-    const name = document.getElementById('script-name').value.trim();
-    const content = document.getElementById('script-content').value.trim();
-    if (!name || !content) {
-        showToast('Заполните название и содержимое', 'error');
-        return;
-    }
-
-    const params = [];
-    document.querySelectorAll('#script-parameters > .form-group').forEach(group => {
-        const nameField = group.querySelector('[data-field="name"]');
-        const defField = group.querySelector('[data-field="default_value"]');
-        const descField = group.querySelector('[data-field="description"]');
-        const paramName = nameField?.value.trim();
-        if (paramName) {
-            params.push({
-                name: paramName,
-                default_value: defField?.value || '',
-                description: descField?.value || ''
-            });
-        }
-    });
-
-    const scriptData = { name, content, params };
-
-    try {
-        let url = '/api/scripts';
-        let method = 'POST';
-        if (currentScriptId) {
-            url = `/api/scripts/${currentScriptId}`;
-            method = 'PUT';
-        }
-
-        const res = await fetch(url, {
-            method,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(scriptData)
-        });
-
-        if (res.ok) {
-            showToast(`Сценарий ${currentScriptId ? 'обновлён' : 'создан'}`, 'success');
-            closeScriptModal();
-            loadScripts();
-        } else {
-            const err = await res.json();
-            showToast(`Ошибка: ${err.detail}`, 'error');
-        }
-    } catch (e) {
-        console.error('Ошибка сохранения:', e);
-        showToast('Ошибка сохранения сценария', 'error');
-    }
-}
-
-async function deleteScript(id) {
-    if (!confirm('Удалить сценарий?')) return;
-    try {
-        const res = await fetch(`/api/scripts/${id}`, { method: 'DELETE' });
-        if (res.ok) {
-            showToast('Сценарий удалён', 'success');
-            loadScripts();
-        } else {
-            const err = await res.json();
-            showToast(`Ошибка: ${err.detail}`, 'error');
-        }
-    } catch (e) {
-        console.error('Ошибка удаления:', e);
-        showToast('Ошибка удаления сценария', 'error');
-    }
-}
-
-// ======================
-// ЗАПУСК СЦЕНАРИЯ
-// ======================
+let allMachines = [];
 
 async function loadMachinesForRun() {
     try {
         const res = await fetch('/api/machines');
-        const machines = await res.json();
+        allMachines = await res.json();
         const select = document.getElementById('run-machine-select');
         select.innerHTML = '';
-        machines
+        allMachines
             .filter(m => m.is_active)
             .forEach(m => {
                 const opt = document.createElement('option');
@@ -260,6 +125,9 @@ function addRunParameter(name = '', value = '') {
     div.innerHTML = `
         <input type="text" placeholder="Имя" value="${name}" style="flex:1;" data-field="name">
         <input type="text" placeholder="Значение" value="${value}" style="flex:2;" data-field="value">
+        <label style="display:flex;align-items:center;gap:4px;">
+            <input type="checkbox" data-field="save"> Сохранить
+        </label>
         <button type="button" class="btn btn-danger btn-sm" style="height:38px;" onclick="this.parentElement.remove()">×</button>
     `;
     container.appendChild(div);
@@ -313,9 +181,50 @@ async function executeScript() {
 }
 
 // ======================
+// УДАЛЕНИЕ СЦЕНАРИЯ
+// ======================
+
+async function deleteScript(id) {
+    if (!confirm('Удалить сценарий?')) return;
+    try {
+        const res = await fetch(`/api/scripts/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+            showToast('Сценарий удалён', 'success');
+            loadScripts();
+        } else {
+            const err = await res.json();
+            showToast(`Ошибка: ${err.detail}`, 'error');
+        }
+    } catch (e) {
+        console.error('Ошибка удаления:', e);
+        showToast('Ошибка удаления сценария', 'error');
+    }
+}
+function collectRunParameters() {
+    const params = [];
+    document.querySelectorAll('#run-parameters-container > .form-group').forEach(group => {
+        const name = group.querySelector('[data-field="name"]')?.value.trim();
+        const value = group.querySelector('[data-field="value"]')?.value.trim();
+        const save = group.querySelector('[data-field="save"]')?.checked || false;
+        if (name) {
+            params.push({ name, value, save });
+        }
+    });
+    return params;
+}
+
+// ======================
 // ИНИЦИАЛИЗАЦИЯ
 // ======================
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Кнопка "Создать сценарий" ведёт на новую страницу
+    const createBtn = document.querySelector('#create-script-btn');
+    if (createBtn) {
+        createBtn.addEventListener('click', () => {
+            window.location.href = '/scripts/new';
+        });
+    }
+
     loadScripts();
 });

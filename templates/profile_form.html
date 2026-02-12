@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>
+        <i class="fas fa-layer-group"></i> 
+        {% if mode == 'edit' %}Редактировать профиль{% else %}Создать профиль{% endif %}
+    </h1>
+    <div class="header-actions">
+        <a href="/profiles" class="btn btn-secondary">
+            <i class="fas fa-arrow-left"></i> Назад к списку
+        </a>
+    </div>
+</div>
+
+<form id="profile-form">
+    <input type="hidden" id="profile-id" value="{{ profile.id if mode == 'edit' else '' }}">
+
+    <div class="form-group">
+        <label>Название профиля *</label>
+        <input type="text" id="profile-name" required value="{{ profile.name if mode == 'edit' else '' }}">
+    </div>
+
+    <!-- Глобальные параметры -->
+    <div class="form-group">
+        <label>Глобальные параметры (применяются ко всем сценариям)</label>
+        <div id="global-parameters">
+            {% if mode == 'edit' %}
+                {% for p in profile.global_parameters %}
+                    <div class="param-row" style="display:flex;gap:0.5rem;margin-bottom:0.5rem;">
+                        <input type="text" placeholder="Имя" value="{{ p.name }}" style="flex:1;" data-field="name">
+                        <input type="text" placeholder="Значение" value="{{ p.value }}" style="flex:2;" data-field="value">
+                        <button type="button" class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">×</button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="addGlobalParameter()">
+            <i class="fas fa-plus"></i> Добавить глобальный параметр
+        </button>
+    </div>
+
+    <hr>
+
+    <!-- Шаги -->
+    <div class="form-group">
+        <label>Шаги выполнения</label>
+        <div id="profile-steps">
+            <!-- {% if mode == 'edit' %}
+                {% for ps in profile.profile_scripts %}
+                    <div class="step-block" style="border:1px solid #ddd;padding:10px;margin-top:10px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                            <strong>Шаг {{ loop.index }}</strong>
+                            <button type="button" class="btn btn-danger btn-sm" onclick="this.parentElement.parentElement.remove()">×</button>
+                            <div class="form-group">
+                                <label>Сценарий</label>
+                                <select class="script-select" style="width:100%;">
+                                    <option value="">Выберите сценарий</option>
+                                    {% for s in all_scripts %}
+                                        <option value="{{ s.id }}" {% if s.id == ps.script_id %}selected{% endif %}>{{ s.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Машины</label>
+                                <select multiple size="4" class="machine-select" style="width:100%;">
+                                    {% for m in all_machines %}
+                                        <option value="{{ m.id }}" {% if m.id in ps.machine_ids %}selected{% endif %}>
+                                            {{ m.name }} ({{ m.address }})
+                                        </option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        <div class="form-group">
+                            <label>Параметры сценария</label>
+                            <div class="step-params">
+                                {% for p in ps.parameters %}
+                                    <div class="param-row" style="display:flex;gap:0.5rem;margin-bottom:0.5rem;">
+                                        <input type="text" placeholder="Имя" value="{{ p.name }}" style="flex:1;" data-field="name">
+                                        <input type="text" placeholder="Значение" value="{{ p.value }}" style="flex:2;" data-field="value">
+                                        <button type="button" class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">×</button>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="addStepParameter(this)">+</button>
+                        </div>
+                    </div>
+                {% endfor %}
+            {% endif %} -->
+        </div>
+        <button type="button" class="btn btn-secondary" onclick="addProfileStep()">
+            <i class="fas fa-plus"></i> Добавить шаг
+        </button>
+    </div>
+
+    <div class="form-actions">
+        <a href="/profiles" class="btn btn-secondary">Отмена</a>
+        <button type="submit" class="btn btn-primary">
+            {% if mode == 'edit' %}Сохранить{% else %}Создать{% endif %}
+        </button>
+    </div>
+</form>
+
+<script src="/static/js/profile_form.js"></script>
+{% endblock %}

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>
+        <i class="fas fa-file-code"></i> 
+        {% if mode == 'edit' %}Редактировать сценарий{% else %}Создать сценарий{% endif %}
+    </h1>
+    <div class="header-actions">
+        <a href="/scripts" class="btn btn-secondary">
+            <i class="fas fa-arrow-left"></i> Назад к списку
+        </a>
+    </div>
+</div>
+
+<form id="script-form">
+    <input type="hidden" id="script-id" value="{{ script.id if mode == 'edit' else '' }}">
+
+    <div class="form-group">
+        <label>Название сценария *</label>
+        <input type="text" id="script-name" required value="{{ script.name if mode == 'edit' else '' }}">
+    </div>
+
+    <div class="form-group">
+        <label>Код скрипта (Bash) *</label>
+        <textarea id="script-content" rows="10" required>{{ script.content if mode == 'edit' else '#!/bin/bash\n' }}</textarea>
+    </div>
+
+    <div class="form-group">
+        <label>Параметры сценария</label>
+        <div id="script-parameters">
+            {% if mode == 'edit' %}
+                {% for p in script.parameters %}
+                    <div class="param-row" style="display:flex;gap:0.5rem;margin-bottom:0.5rem;">
+                        <input type="text" placeholder="Имя" value="{{ p.name }}" style="flex:1;" data-field="name">
+                        <input type="text" placeholder="Значение по умолчанию" value="{{ p.default_value or '' }}" style="flex:1;" data-field="default_value">
+                        <input type="text" placeholder="Описание" value="{{ p.description or '' }}" style="flex:2;" data-field="description">
+                        <button type="button" class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">×</button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        </div>
+        <div style="display:flex;gap:0.5rem;align-items:center;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="addScriptParameter()">
+                <i class="fas fa-plus"></i> Добавить параметр
+            </button>
+            <select id="saved-parameters-select" style="padding:0.5rem;border:1px solid #cbd5e0;border-radius:5px;">
+                <option value="">Выбрать сохранённый параметр...</option>
+            </select>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="loadSavedParameter()">
+                <i class="fas fa-download"></i> Загрузить
+            </button>
+        </div>
+    </div>
+
+    <div class="form-actions">
+        <a href="/scripts" class="btn btn-secondary">Отмена</a>
+        <button type="submit" class="btn btn-primary">
+            {% if mode == 'edit' %}Сохранить{% else %}Создать{% endif %}
+        </button>
+    </div>
+</form>
+
+<script src="/static/js/script_form.js"></script>
+{% endblock %}

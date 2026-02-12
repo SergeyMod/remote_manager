@@ -1,6 +1,6 @@
 import sys
 from fastapi import FastAPI, Request, Depends, HTTPException, WebSocket, \
-    WebSocketDisconnect, params
+    WebSocketDisconnect, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -28,16 +28,21 @@ app = FastAPI(title="SSH Manager")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+
 def substitute_script_params(script_content: str, params: list) -> str:
+    """Подставляет параметры вида $NAME или ${NAME} в скрипт."""
     result = script_content
     for p in params:
         name = str(p.get('name', '')).strip()
         value = str(p.get('value', ''))
         if not name:
             continue
+        # Экранируем одинарные кавычки для shell
+        safe_value = value.replace("'", "'\"'\"'")
+        # Шаблон: совпадает $NAME и ${NAME}
         pattern = r'\$(?:' + re.escape(name) + r'\b|\{' + re.escape(name) + r'\})'
-        result = re.sub(pattern, f"{value}", result)
-        print(result)
+        # Заменяем на значение в одинарных кавычках
+        result = re.sub(pattern, f"'{safe_value}'", result)
     return result
 
 # Создаем таблицы при старте
@@ -362,20 +367,46 @@ async def get_machine_processes(machine_id: int,
 
 
 # Script endpoints
+@app.get("/api/scripts/{script_id}")
+async def get_script_api(script_id: int, db: Session = Depends(get_db)):
+    script = crud.get_script(db, script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+    
+    try:
+        params = json.loads(script.parameters) if script.parameters else []
+    except:
+        params = []
+
+    # Убедитесь, что параметры уже распарсены (в crud.get_script они парсятся)
+    return {
+        "id": script.id,
+        "name": script.name,
+        "content": script.content,
+        "parameters": params,  
+        "created_at": script.created_at.isoformat() if script.created_at else None,
+        "updated_at": script.updated_at.isoformat() if script.updated_at else None
+    }
+
+
 @app.get("/api/scripts")
 async def get_scripts_api(db: Session = Depends(get_db)):
     try:
         scripts = crud.get_scripts(db)
         result = []
         for s in scripts:
-            params = crud.get_script_parameters(db, s.id)
+            # Парсим параметры из JSON-поля
+            try:
+                params = json.loads(s.parameters) if s.parameters else []
+            except:
+                params = []
             result.append({
                 'id': s.id,
                 'name': s.name,
                 'content': s.content,
                 'created_at': s.created_at.isoformat() if s.created_at else None,
                 'updated_at': s.updated_at.isoformat() if s.updated_at else None,
-                'parameters': [p.to_dict() for p in params]
+                'parameters': params
             })
         return result
     except Exception as e:
@@ -384,90 +415,70 @@ async def get_scripts_api(db: Session = Depends(get_db)):
 
 
 @app.post("/api/scripts")
-async def create_script_api(script: dict, db: Session = Depends(get_db)):
+async def create_script_api(script: dict=Body(...), db: Session = Depends(get_db)):
     try:
         params = script.pop('params', [])
+        script['parameters'] = json.dumps(params)  # ← сериализация
         db_script = crud.create_script(db, script)
-
-        # Добавляем параметры сценария
-        for idx, p in enumerate(params):
-            name = str(p.get('name') or '').strip()
-            if not name:
-                continue
-            param_data = {
-                'script_id': db_script.id,
-                'name': name,
-                'default_value': p.get('default_value'),
-                'description': p.get('description'),
-                'order_index': idx
-            }
-            crud.create_script_parameter(db, param_data)
-
-        await manager.broadcast(
-            json.dumps({"type": "update", "entity": "scripts"}))
         return db_script
     except Exception as e:
         logger.error(f"Error creating script: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/scripts/{script_id}")
-async def get_script_api(script_id: int, db: Session = Depends(get_db)):
+@app.get("/api/scripts")
+async def get_scripts_api(db: Session = Depends(get_db)):
     try:
-        script = crud.get_script(db, script_id)
-        if not script:
-            raise HTTPException(status_code=404, detail="Script not found")
-
-        # Получаем параметры сценария
-        params = crud.get_script_parameters(db, script_id)
-        script_dict = {
-            'id': script.id,
-            'name': script.name,
-            'content': script.content,
-            'created_at': script.created_at.isoformat() if script.created_at else None,
-            'updated_at': script.updated_at.isoformat() if script.updated_at else None,
-            'parameters': [p.to_dict() for p in params]
-        }
-        return script_dict
-    except HTTPException:
-        raise
+        scripts = crud.get_scripts(db)
+        result = []
+        for s in scripts:
+            # Парсим параметры из JSON-поля Script.parameters
+            try:
+                params = json.loads(s.parameters) if s.parameters else []
+            except:
+                params = []
+            result.append({
+                'id': s.id,
+                'name': s.name,
+                'content': s.content,
+                'created_at': s.created_at.isoformat() if s.created_at else None,
+                'updated_at': s.updated_at.isoformat() if s.updated_at else None,
+                'parameters': params
+            })
+        return result
     except Exception as e:
-        logger.error(f"Error getting script: {e}")
+        logger.error(f"Error getting scripts: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.put("/api/scripts/{script_id}")
-async def update_script_api(script_id: int, script_data: dict,
+async def update_script_api(script_id: int, script_dict=Body(...), 
                             db: Session = Depends(get_db)):
     try:
-        params = script_data.pop('params', [])
 
-        db_script = crud.update_script(db, script_id, script_data)
-        if not db_script:
+        # Извлекаем параметры (фронтенд отправляет их как 'params')
+        params = script_dict.pop('params', [])
+        
+        # Сериализуем параметры в JSON-строку для сохранения в БД
+        script_dict['parameters'] = json.dumps(params)
+
+        # Обновляем сценарий
+        updated_script = crud.update_script(db, script_id, script_dict)
+        if not updated_script:
             raise HTTPException(status_code=404, detail="Script not found")
 
-        # Перезапишем параметры сценария
-        crud.delete_script_parameters(db, script_id)
-        for idx, p in enumerate(params):
-            name = str(p.get('name') or '').strip()
-            if not name:
-                continue
-            param_data = {
-                'script_id': script_id,
-                'name': name,
-                'default_value': p.get('default_value'),
-                'description': p.get('description'),
-                'order_index': idx
-            }
-            crud.create_script_parameter(db, param_data)
+        return {
+            "id": updated_script.id,
+            "name": updated_script.name,
+            "content": updated_script.content,
+            "parameters": json.loads(updated_script.parameters) if updated_script.parameters else [],
+            "updated_at": updated_script.updated_at.isoformat() if updated_script.updated_at else None
+        }
 
-        await manager.broadcast(
-            json.dumps({"type": "update", "entity": "scripts"}))
-        return db_script
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error updating script: {e}")
+        logger.error(f"Error updating script {script_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -495,37 +506,33 @@ async def execute_script_api(script_id: int, request: dict, db: Session = Depend
             raise HTTPException(status_code=404, detail="Script not found")
 
         machine_ids = request.get("machine_ids", [])
-        params = request.get("params", [])
+        params = request.get("params", [])  # list of {name, value, save, description}
 
-        # Логируем параметры — будет видно в консоли при правильной настройке logging
         logger.info(f"Executing script {script_id} with params: {params}")
 
-        # Проверка: только один ENDPOINT разрешён
-        endpoint_count = sum(
-            1 for p in params
-            if p.get('name') and str(p['name']).strip().upper() == 'ENDPOINT'
-        )
+        # ENDPOINT может быть только один
+        endpoint_count = sum(1 for p in params if p.get('name') and p.get('name').upper() == 'ENDPOINT')
         if endpoint_count > 1:
             raise HTTPException(status_code=400, detail="Only one ENDPOINT parameter is allowed")
 
+        # Обрабатываем сохранение параметров
+        for p in params:
+            if p.get('save'):
+                name = str(p.get('name') or '').strip()
+                value = str(p.get('value') or '')
+                description = p.get('description', '')
+                if name:
+                    existing = crud.get_parameter_by_name(db, name)
+                    if existing:
+                        existing.value = value
+                        existing.description = description
+                        db.commit()
+                    else:
+                        crud.create_parameter(db, {"name": name, "value": value, "description": description})
+                    await manager.broadcast(json.dumps({"type": "update", "entity": "parameters"}))
+
         # Подстановка параметров в скрипт (единожды)
         final_script_content = substitute_script_params(script.content, params)
-
-        # Сохранение параметров в БД (если save=True)
-        # for p in params:
-        #     if p.get('save'):
-        #         name = str(p.get('name') or '').strip()
-        #         value = str(p.get('value') or '')
-        #         description = p.get('description', '')
-        #         if name:
-        #             existing = crud.get_parameter_by_name(db, name)
-        #             if existing:
-        #                 existing.value = value
-        #                 existing.description = description
-        #                 db.commit()
-        #             else:
-        #                 crud.create_parameter(db, {"name": name, "value": value, "description": description})
-        #             await manager.broadcast(json.dumps({"type": "update", "entity": "parameters"}))
 
         # Запуск в фоне
         asyncio.create_task(execute_script_background_content(final_script_content, machine_ids, script_id))
@@ -735,8 +742,14 @@ async def execute_profile_api(profile_id: int, db: Session = Depends(get_db)):
             script_params = json.loads(ps.parameters) if ps.parameters else []
 
             # Объединяем: сначала глобальные, потом параметры шага (шаг переопределяет)
-            param_dict = {p['name']: p['value'] for p in global_params}
-            param_dict.update({p['name']: p['value'] for p in script_params})
+            param_dict = {}
+
+            for p in global_params:
+                param_dict[p['name']] = p['value']
+
+            for p in script_params:
+                param_dict[p['name']] = p['value']
+
             combined_params = [{"name": k, "value": v} for k, v in param_dict.items()]
 
             # Подставляем в скрипт
@@ -778,6 +791,37 @@ async def execute_profile_api(profile_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Profile execution error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
+    
+
+@app.get("/scripts/new")
+async def new_script_page(request: Request):
+    return templates.TemplateResponse("script_form.html", {"request": request, "mode": "create"})
+
+@app.get("/scripts/{script_id}/edit")
+async def edit_script_page(script_id: int, request: Request, db: Session = Depends(get_db)):
+    script = crud.get_script(db, script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+    return templates.TemplateResponse("script_form.html", {
+        "request": request,
+        "mode": "edit",
+        "script": script
+    })
+
+@app.get("/profiles/new")
+async def new_profile_page(request: Request):
+    return templates.TemplateResponse("profile_form.html", {"request": request, "mode": "create"})
+
+@app.get("/profiles/{profile_id}/edit")
+async def edit_profile_page(profile_id: int, request: Request, db: Session = Depends(get_db)):
+    profile_data = crud.get_profile_with_steps(db, profile_id)
+    if not profile_data:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return templates.TemplateResponse("profile_form.html", {
+        "request": request,
+        "mode": "edit",
+        "profile": profile_data
+    })
     
 
 # User endpoints
