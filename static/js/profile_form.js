@@ -86,7 +86,7 @@ function loadSavedParameterGlobal() {
     }
 }
 
-async function addProfileStep(scriptId = '', machineIds = [], params = [], isCollapsed = false) {
+async function addProfileStep(scriptId = '', machineIds = [], params = [], isCollapsed = false, enabled = true) {
     const stepsContainer = document.getElementById('profile-steps');
     const stepIndex = stepsContainer.children.length + 1;
     const stepDiv = document.createElement('div');
@@ -104,8 +104,9 @@ async function addProfileStep(scriptId = '', machineIds = [], params = [], isCol
 
     // Создаём HTML
     stepDiv.innerHTML = `
-        <div class="step-header" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;">
-            <strong>Шаг ${stepIndex}: ${scriptName}</strong>
+        <div class="step-header" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
+            <input type="checkbox" class="step-enabled-checkbox" ${enabled ? 'checked' : ''} style="cursor:pointer;width:20px;height:20px;" onclick="event.stopPropagation();" title="Включить/выключить шаг при запуске профиля">
+            <strong style="flex:1;">Шаг ${stepIndex}: ${scriptName}</strong>
             <span class="toggle-icon">${isCollapsed ? '▶' : '▼'}</span>
         </div>
         <div class="step-content" style="${isCollapsed ? 'display:none;' : ''}">
@@ -349,11 +350,15 @@ document.getElementById('profile-form').addEventListener('submit', async (e) => 
             .map(opt => parseInt(opt.value));
 
         const params = collectParameters(step.querySelector('.step-params'));
+        
+        // Получаем состояние чекбокса
+        const enabled = step.querySelector('.step-enabled-checkbox')?.checked ?? true;
 
         steps.push({
             script_id: scriptId,
             machine_ids: machineIds,
-            params: params
+            params: params,
+            enabled: enabled
         });
     });
 
@@ -417,7 +422,8 @@ async function initEditMode() {
                 ps.script_id,
                 ps.machine_ids || [],
                 ps.parameters || [],
-                true // ← свёрнуто при загрузке
+                true, // ← свёрнуто при загрузке
+                ps.enabled !== undefined ? ps.enabled : true // ← состояние чекбокса
             );
         }
     } catch (e) {

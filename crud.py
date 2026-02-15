@@ -196,7 +196,8 @@ def create_profile(db: Session, profile_data: dict):
             script_id=step["script_id"],
             machine_ids=json.dumps(step.get("machine_ids", [])),
             parameters=json.dumps(step.get("params", [])),
-            order_index=idx
+            order_index=idx,
+            enabled=step.get("enabled", True)
         )
         db.add(ps)
 
@@ -235,7 +236,8 @@ def get_profile_with_steps(db: Session, profile_id: int):
             "script_name": scripts_map.get(ps.script_id, f"Сценарий #{ps.script_id}"),
             "machine_ids": machine_ids_list,
             "machine_names": [machines_map.get(mid, f"Машина #{mid}") for mid in machine_ids_list],
-            "parameters": json.loads(ps.parameters) if ps.parameters else []
+            "parameters": json.loads(ps.parameters) if ps.parameters else [],
+            "enabled": ps.enabled if hasattr(ps, 'enabled') else True
         })
 
     return {
@@ -264,7 +266,8 @@ def update_profile(db: Session, profile_id: int, profile_data: dict):
             script_id=step["script_id"],
             machine_ids=json.dumps(step.get("machine_ids", [])),
             parameters=json.dumps(step.get("params", [])),
-            order_index=idx
+            order_index=idx,
+            enabled=step.get("enabled", True)
         )
         db.add(ps)
 

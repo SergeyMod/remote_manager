@@ -717,7 +717,11 @@ async def delete_profile_api(profile_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/profiles/{profile_id}/execute")
-async def execute_profile_api(profile_id: int, db: Session = Depends(get_db)):
+async def execute_profile_api(
+    profile_id: int, 
+    request: Request,
+    db: Session = Depends(get_db)
+):
     try:
         # Получаем профиль как модель (не dict!)
         profile = crud.get_profile(db, profile_id)
@@ -730,6 +734,9 @@ async def execute_profile_api(profile_id: int, db: Session = Depends(get_db)):
         # Парсим глобальные параметры из поля (не метода!)
         global_params = json.loads(profile.global_parameters) if profile.global_parameters else []
 
+        # Фильтруем только включенные шаги
+        profile_scripts = [ps for ps in profile_scripts if getattr(ps, 'enabled', True)]
+
         results = []
 
         for ps in profile_scripts:
@@ -741,8 +748,16 @@ async def execute_profile_api(profile_id: int, db: Session = Depends(get_db)):
             machine_ids = json.loads(ps.machine_ids) if ps.machine_ids else []
             script_params = json.loads(ps.parameters) if ps.parameters else []
 
+            try:
+                script_params_list = json.loads(script.parameters) if script.parameters else []
+            except:
+                script_params_list = []
+
             # Объединяем: сначала глобальные, потом параметры шага (шаг переопределяет)
             param_dict = {}
+
+            for p in script_params_list:
+                param_dict[p['name']] = p['default_value']
 
             for p in global_params:
                 param_dict[p['name']] = p['value']
@@ -802,10 +817,19 @@ async def edit_script_page(script_id: int, request: Request, db: Session = Depen
     script = crud.get_script(db, script_id)
     if not script:
         raise HTTPException(status_code=404, detail="Script not found")
+    
+    # Parse parameters from JSON string
+    script_dict = {
+        "id": script.id,
+        "name": script.name,
+        "content": script.content,
+        "parameters": json.loads(script.parameters) if script.parameters else []
+    }
+    
     return templates.TemplateResponse("script_form.html", {
         "request": request,
         "mode": "edit",
-        "script": script
+        "script": script_dict
     })
 
 @app.get("/profiles/new")

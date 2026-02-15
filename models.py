@@ -91,6 +91,7 @@ class ProfileScript(Base):
     machine_ids = Column(String, default="[]")   # JSON list of machine IDs
     parameters = Column(String, default="[]")    # JSON list of params: [{"name":"X","value":"Y"}]
     order_index = Column(Integer, default=0)
+    enabled = Column(Boolean, default=True)      # Whether this step is enabled for execution
 
     profile = relationship("Profile", back_populates="profile_scripts")
     script = relationship("Script", back_populates="profile_scripts")
