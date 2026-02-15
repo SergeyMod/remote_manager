@@ -22,6 +22,14 @@ class Machine(Base):
     processes = relationship("Process", back_populates="machine")
 
 
+class ProcessViewSetting(Base):
+    __tablename__ = "process_view_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    regex_pattern = Column(String, nullable=False, default=".*")
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
 class User(Base):
     __tablename__ = "users"
 

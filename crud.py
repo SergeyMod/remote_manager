@@ -5,6 +5,28 @@ import datetime
 import json
 
 
+# ProcessViewSetting CRUD
+def get_process_view_setting(db: Session):
+    setting = db.query(models.ProcessViewSetting).first()
+    if not setting:
+        # Создаём настройку по умолчанию
+        setting = models.ProcessViewSetting(regex_pattern=".*")
+        db.add(setting)
+        db.commit()
+        db.refresh(setting)
+    return setting
+
+def update_process_view_setting(db: Session, regex_pattern: str):
+    setting = db.query(models.ProcessViewSetting).first()
+    if not setting:
+        setting = models.ProcessViewSetting(regex_pattern=regex_pattern)
+        db.add(setting)
+    else:
+        setting.regex_pattern = regex_pattern
+    db.commit()
+    db.refresh(setting)
+    return setting
+
 # Machine CRUD operations
 def get_machines(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.Machine).offset(skip).limit(limit).all()

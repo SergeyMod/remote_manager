@@ -112,6 +112,15 @@
             >
             <div id="regex-error" style="color: #e53e3e; font-size: 0.875rem; margin-top: 0.25rem; display: none;"></div>
         </div>
+
+        <button 
+            id="save-regex-btn" 
+            class="btn btn-primary"
+            onclick="saveRegexPattern()"
+            style="display: flex; align-items: center; gap: 0.25rem;"
+        >
+            <i class="fas fa-save"></i> Сохранить
+        </button>
     </div>
     
     <div style="margin-top: 0.5rem; font-size: 0.875rem; color: #718096;">
@@ -223,6 +232,10 @@ function applyReplacementMode(inputStr) {
             
             storeOriginal(cell);
             setMultilineContent(cell, result);
+        } else {
+            // Если регулярка не нашла совпадений, оставляем исходное значение
+            storeOriginal(cell);
+            setMultilineContent(cell, originalText);
         }
     });
 }
@@ -330,11 +343,52 @@ function hideDebounceIndicator() {
     }
 }
 
+// Загружает регулярку из БД при старте
+async function loadSavedRegex() {
+    try {
+        const res = await fetch('/api/process-view-setting');
+        const data = await res.json();
+        document.getElementById('highlight-regex').value = data.regex_pattern;
+        applyRegexTransformation(); // Применяем сразу
+    } catch (e) {
+        console.warn('Не удалось загрузить регулярку:', e);
+    }
+}
+
+// Сохраняет регулярку в БД
+async function saveRegexPattern() {
+    const regexInput = document.getElementById('highlight-regex');
+    const pattern = regexInput.value.trim();
+    
+    if (!pattern) {
+        showToast('Введите регулярное выражение', 'warning');
+        return;
+    }
+    
+    try {
+        const res = await fetch('/api/process-view-setting', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ regex_pattern: pattern })
+        });
+        
+        if (res.ok) {
+            showToast('Регулярка сохранена', 'success');
+        } else {
+            throw new Error('Ошибка сохранения');
+        }
+    } catch (e) {
+        console.error('Ошибка сохранения регулярки:', e);
+        showToast('Не удалось сохранить регулярку', 'error');
+    }
+}
+
 let processesInterval = null;
 let currentMachineFilter = '';
 
 document.addEventListener('DOMContentLoaded', function() {
     loadMachinesForFilter();
+    loadSavedRegex();
 
     // Устанавливаем фильтр по умолчанию
     const defaultFilterInput = document.getElementById('process-filter');
@@ -534,6 +588,9 @@ function updateProcessesTable(processes) {
     // Обновляем счетчик и кнопку
     updateProcessCount(processes.length, processes.length);
     updateStopAllButton(processes.length);
+    
+    // Применяем сохраненную регулярку/подсветку
+    applyRegexTransformation();
 }
 
 // Функция остановки всех отфильтрованных процессов

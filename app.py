@@ -1155,6 +1155,22 @@ async def batch_kill_processes(request: dict, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error in batch kill: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+    
+
+# Process View Settings API
+@app.get("/api/process-view-setting")
+async def get_process_view_setting_api(db: Session = Depends(get_db)):
+    setting = crud.get_process_view_setting(db)
+    return {"regex_pattern": setting.regex_pattern}
+
+@app.put("/api/process-view-setting")
+async def update_process_view_setting_api(
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    regex_pattern = request.get("regex_pattern", ".*")
+    setting = crud.update_process_view_setting(db, regex_pattern)
+    return {"regex_pattern": setting.regex_pattern}
 
 
 # WebSocket endpoint
