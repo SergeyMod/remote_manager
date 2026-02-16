@@ -27,7 +27,7 @@ async function loadSavedParameters() {
     }
 }
 
-function addScriptParameter(name = '', defaultValue = '', description = '') {
+function addScriptParameter(name = '', defaultValue = '', description = '', save = false) {
     const container = document.getElementById('script-parameters');
     const div = document.createElement('div');
     div.className = 'param-row';
@@ -38,6 +38,9 @@ function addScriptParameter(name = '', defaultValue = '', description = '') {
         <input type="text" placeholder="Имя" value="${name}" style="flex:1;" data-field="name">
         <input type="text" placeholder="Значение по умолчанию" value="${defaultValue}" style="flex:1;" data-field="default_value">
         <input type="text" placeholder="Описание" value="${description}" style="flex:2;" data-field="description">
+        <label style="display:flex;align-items:center;gap:4px;">
+            <input type="checkbox" data-field="save" ${save ? 'checked' : ''}> Сохранить
+        </label>
         <button type="button" class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">×</button>
     `;
     container.appendChild(div);
@@ -50,7 +53,7 @@ function loadSavedParameter() {
 
     const param = savedParameters.find(p => p.id == selectedId);
     if (param) {
-        addScriptParameter(param.name, param.value, param.description);
+        addScriptParameter(param.name, param.value, param.description, false);
     }
 }
 
@@ -71,7 +74,8 @@ document.getElementById('script-form').addEventListener('submit', async (e) => {
             params.push({
                 name,
                 default_value: row.querySelector('[data-field="default_value"]')?.value || '',
-                description: row.querySelector('[data-field="description"]')?.value || ''
+                description: row.querySelector('[data-field="description"]')?.value || '',
+                save: row.querySelector('[data-field="save"]')?.checked || false
             });
         }
     });
@@ -94,6 +98,24 @@ document.getElementById('script-form').addEventListener('submit', async (e) => {
         });
 
         if (res.ok) {
+            // Сохраняем параметры с галочкой "Сохранить"
+            for (const p of params) {
+                if (p.save && p.default_value) {
+                    try {
+                        await fetch('/api/parameters', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                name: p.name,
+                                value: p.default_value,
+                                description: p.description
+                            })
+                        });
+                    } catch (e) {
+                        console.warn('Не удалось сохранить параметр:', p.name);
+                    }
+                }
+            }
             window.location.href = '/scripts';
         } else {
             const err = await res.json();

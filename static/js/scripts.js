@@ -138,8 +138,9 @@ function collectRunParameters() {
     document.querySelectorAll('#run-parameters-container > .form-group').forEach(group => {
         const name = group.querySelector('[data-field="name"]')?.value.trim();
         const value = group.querySelector('[data-field="value"]')?.value.trim();
+        const save = group.querySelector('[data-field="save"]')?.checked || false;
         if (name) {
-            params.push({ name, value, save: false });
+            params.push({ name, value, save });
         }
     });
     return params;

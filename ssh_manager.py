@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple
 import datetime
 import socket
 import logging
+import os
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -287,3 +288,43 @@ async def test_connection(host: str, port: int, username: str,
 
 
 ssh_manager = SSHManager()
+
+
+async def upload_file(host: str, port: int, username: str, password: str,
+                      local_path: str, remote_path: str) -> Tuple[bool, str]:
+    """Загрузка файла на удаленную машину через SFTP"""
+    try:
+        logger.info(f"Uploading file {local_path} to {host}:{remote_path}")
+        
+        # Подключаемся и используем SFTP для загрузки
+        async with asyncssh.connect(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            known_hosts=None,
+            login_timeout=10,
+            connect_timeout=10
+        ) as conn:
+            # Используем SFTP для загрузки файла
+            async with conn.start_sftp_client() as sftp:
+                await sftp.put(local_path, remote_path)
+            
+            logger.info(f"File uploaded successfully to {host}:{remote_path}")
+            return True, "File uploaded successfully"
+    
+    except asyncio.TimeoutError:
+        logger.warning(f"Upload to {host} timeout")
+        return False, "Connection timeout"
+    
+    except asyncssh.PermissionDenied:
+        logger.warning(f"Upload permission denied to {host}")
+        return False, "Permission denied"
+    
+    except FileNotFoundError:
+        logger.warning(f"Local file not found: {local_path}")
+        return False, f"Local file not found: {local_path}"
+    
+    except Exception as e:
+        logger.error(f"Upload error to {host}: {e}")
+        return False, f"Upload error: {str(e)}"

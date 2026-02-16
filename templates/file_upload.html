@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1><i class="fas fa-file-upload"></i> Загрузка файла</h1>
+    <div class="header-actions">
+        <button class="btn btn-primary" onclick="uploadFile()" id="upload-btn">
+            <i class="fas fa-upload"></i> Загрузить
+        </button>
+    </div>
+</div>
+
+<form id="file-upload-form">
+    <div class="form-group">
+        <label>Выберите файл для загрузки *</label>
+        <input type="file" id="file-input" required>
+    </div>
+
+    <div class="form-group">
+        <label>Путь на удаленной машине (куда загрузить файл) *</label>
+        <input type="text" id="remote-path" placeholder="Например: /home/user/files/" required>
+    </div>
+
+    <div class="form-group">
+        <label>Выберите машины для загрузки:</label>
+        <div style="margin-bottom: 10px;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="selectAllMachines()">
+                <i class="fas fa-check-double"></i> Выбрать все
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="deselectAllMachines()">
+                <i class="fas fa-times"></i> Снять все
+            </button>
+        </div>
+        <select id="machine-select" multiple size="8" style="width:100%;">
+            <!-- Загружается динамически -->
+        </select>
+    </div>
+
+    <div id="upload-status"></div>
+</form>
+
+<style>
+    .upload-progress {
+        margin-top: 15px;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    .upload-progress.success {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        color: #155724;
+    }
+    .upload-progress.error {
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        color: #721c24;
+    }
+    .upload-progress.info {
+        background-color: #d1ecf1;
+        border: 1px solid #bee5eb;
+        color: #0c5460;
+    }
+</style>
+
+<script>
+let allMachines = [];
+
+// Загрузка списка машин при загрузке страницы
+async function loadMachines() {
+    try {
+        const res = await fetch('/api/machines');
+        allMachines = await res.json();
+        const select = document.getElementById('machine-select');
+        select.innerHTML = '';
+        allMachines
+            .filter(m => m.is_active)
+            .forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = `${m.name} (${m.address})`;
+                select.appendChild(opt);
+            });
+    } catch (e) {
+        console.error('Ошибка загрузки машин:', e);
+        showStatus('Ошибка загрузки списка машин', 'error');
+    }
+}
+
+function selectAllMachines() {
+    const select = document.getElementById('machine-select');
+    Array.from(select.options).forEach(opt => opt.selected = true);
+}
+
+function deselectAllMachines() {
+    const select = document.getElementById('machine-select');
+    Array.from(select.options).forEach(opt => opt.selected = false);
+}
+
+function showStatus(message, type) {
+    const statusDiv = document.getElementById('upload-status');
+    statusDiv.innerHTML = `<div class="upload-progress ${type}">${message}</div>`;
+}
+
+async function uploadFile() {
+    const fileInput = document.getElementById('file-input');
+    const remotePath = document.getElementById('remote-path').value.trim();
+    const machineSelect = document.getElementById('machine-select');
+    const machineIds = Array.from(machineSelect.selectedOptions).map(o => parseInt(o.value));
+
+    if (!fileInput.files.length) {
+        showStatus('Пожалуйста, выберите файл', 'error');
+        return;
+    }
+
+    if (!remotePath) {
+        showStatus('Пожалуйста, укажите путь на удаленной машине', 'error');
+        return;
+    }
+
+    if (machineIds.length === 0) {
+        showStatus('Пожалуйста, выберите хотя бы одну машину', 'error');
+        return;
+    }
+
+    const file = fileInput.files[0];
+    const uploadBtn = document.getElementById('upload-btn');
+    uploadBtn.disabled = true;
+    showStatus('Загрузка файла...', 'info');
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('remote_path', remotePath);
+        formData.append('machine_ids', JSON.stringify(machineIds));
+
+        const res = await fetch('/api/file-upload', {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await res.json();
+
+        if (res.ok) {
+            let successCount = result.results.filter(r => r.success).length;
+            let totalCount = result.results.length;
+            showStatus(`Загрузка завершена. Успешно: ${successCount}/${totalCount}`, 
+                successCount === totalCount ? 'success' : 'error');
+        } else {
+            showStatus(`Ошибка: ${result.detail || 'Неизвестная ошибка'}`, 'error');
+        }
+    } catch (e) {
+        console.error('Ошибка загрузки:', e);
+        showStatus(`Ошибка: ${e.message}`, 'error');
+    } finally {
+        uploadBtn.disabled = false;
+    }
+}
+
+// Загружаем машины при загрузке страницы
+loadMachines();
+</script>
+{% endblock %}

@@ -35,6 +35,9 @@
                         <input type="text" placeholder="Имя" value="{{ p.name }}" style="flex:1;" data-field="name">
                         <input type="text" placeholder="Значение по умолчанию" value="{{ p.default_value or '' }}" style="flex:1;" data-field="default_value">
                         <input type="text" placeholder="Описание" value="{{ p.description or '' }}" style="flex:2;" data-field="description">
+                        <label style="display:flex;align-items:center;gap:4px;">
+                            <input type="checkbox" data-field="save" {% if p.save %}checked{% endif %}> Сохранить
+                        </label>
                         <button type="button" class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">×</button>
                     </div>
                 {% endfor %}

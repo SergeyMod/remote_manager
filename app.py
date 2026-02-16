@@ -38,11 +38,11 @@ def substitute_script_params(script_content: str, params: list) -> str:
         if not name:
             continue
         # Экранируем одинарные кавычки для shell
-        safe_value = value.replace("'", "'\"'\"'")
+        # safe_value = value.replace("'", "'\"'\"'")
         # Шаблон: совпадает $NAME и ${NAME}
         pattern = r'\$(?:' + re.escape(name) + r'\b|\{' + re.escape(name) + r'\})'
         # Заменяем на значение в одинарных кавычках
-        result = re.sub(pattern, f"'{safe_value}'", result)
+        result = re.sub(pattern, f"{value}", result)
     return result
 
 # Создаем таблицы при старте
@@ -837,14 +837,15 @@ async def new_profile_page(request: Request):
     return templates.TemplateResponse("profile_form.html", {"request": request, "mode": "create"})
 
 @app.get("/profiles/{profile_id}/edit")
-async def edit_profile_page(profile_id: int, request: Request, db: Session = Depends(get_db)):
+async def edit_profile_page(profile_id: int, request: Request, profile: str = None, db: Session = Depends(get_db)):
     profile_data = crud.get_profile_with_steps(db, profile_id)
     if not profile_data:
         raise HTTPException(status_code=404, detail="Profile not found")
     return templates.TemplateResponse("profile_form.html", {
         "request": request,
         "mode": "edit",
-        "profile": profile_data
+        "profile": profile_data,
+        "profile_name": profile
     })
     
 
@@ -1256,6 +1257,87 @@ async def profiles_page(request: Request):
 @app.get("/users", response_class=HTMLResponse)
 async def users_page(request: Request):
     return templates.TemplateResponse("users.html", {"request": request})
+
+
+@app.get("/file-upload", response_class=HTMLResponse)
+async def file_upload_page(request: Request):
+    return templates.TemplateResponse("file_upload.html", {"request": request})
+
+
+# File upload API
+@app.post("/api/file-upload")
+async def upload_file_api(request: Request, db: Session = Depends(get_db)):
+    try:
+        # Получаем данные из формы
+        form = await request.form()
+        
+        file = form.get("file")
+        remote_path = form.get("remote_path")
+        machine_ids_json = form.get("machine_ids")
+        
+        if not file or not remote_path or not machine_ids_json:
+            raise HTTPException(status_code=400, detail="Missing required fields")
+        
+        machine_ids = json.loads(machine_ids_json)
+        
+        # Читаем содержимое файла
+        file_content = await file.read()
+        
+        # Создаем временный файл
+        import tempfile
+        import os
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp_file:
+            tmp_file.write(file_content)
+            tmp_path = tmp_file.name
+        
+        try:
+            results = []
+            
+            for machine_id in machine_ids:
+                machine = crud.get_machine(db, machine_id)
+                if not machine or not machine.is_active:
+                    results.append({
+                        "machine_id": machine_id,
+                        "machine_name": f"Machine #{machine_id}",
+                        "success": False,
+                        "message": "Machine not found or inactive"
+                    })
+                    continue
+                
+                # Загружаем файл
+                success, message = await ssh_manager.upload_file(
+                    machine.address,
+                    machine.ssh_port,
+                    str(machine.username),
+                    machine.password,
+                    tmp_path,
+                    remote_path
+                )
+                
+                results.append({
+                    "machine_id": machine_id,
+                    "machine_name": machine.name,
+                    "success": success,
+                    "message": message
+                })
+            
+            return {
+                "message": f"File uploaded to {len(machine_ids)} machines",
+                "results": results
+            }
+        finally:
+            # Удаляем временный файл
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # API для текущей машины
